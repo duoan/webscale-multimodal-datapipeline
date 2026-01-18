@@ -7,167 +7,144 @@ A high-performance, distributed image data processing pipeline built with Ray, f
 ### Pipeline Overview
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#4f46e5', 'primaryTextColor': '#fff', 'primaryBorderColor': '#6366f1', 'lineColor': '#a5b4fc', 'secondaryColor': '#1e1b4b', 'tertiaryColor': '#312e81', 'background': '#0f0f23', 'mainBkg': '#1e1b4b', 'nodeBorder': '#6366f1', 'clusterBkg': '#1e1b4b', 'clusterBorder': '#6366f1', 'titleColor': '#e0e7ff', 'edgeLabelBackground': '#312e81'}}}%%
 flowchart TB
-    subgraph Driver["🖥️ Ray Driver (main.py)"]
-        Config[Config Loader]
+    subgraph Driver["Ray Driver"]
+        Config[Config]
         Executor[Executor]
-        Progress[Progress & Stats]
+        Progress[Stats]
     end
 
-    subgraph ObjectStore["📦 Ray Object Store (Shared Memory)"]
-        Batches["Batch Records: list[dict]"]
+    subgraph ObjectStore["Object Store"]
+        Batches["Shared Memory"]
     end
 
-    subgraph Stage0["⚙️ Stage 0: CPU Worker Pool (num_replicas=8)"]
+    subgraph Stage0["CPU Pool ×8"]
         direction LR
-        W0["Worker 0"]
-        W1["Worker 1"]
-        W2["Worker 2"]
-        W3["..."]
-        W7["Worker 7"]
+        W0["W0"]
+        W1["W1"]
+        W2["W2"]
+        Wn["..."]
+        W7["W7"]
     end
 
-    subgraph Stage1["🎮 Stage 1: GPU Worker Pool (num_replicas=2)"]
+    subgraph Stage1["GPU Pool ×2"]
         direction LR
-        GPU0["GPU Worker 0<br/>CLIP + ThreadPool"]
-        GPU1["GPU Worker 1<br/>CLIP + ThreadPool"]
+        GPU0["GPU0"]
+        GPU1["GPU1"]
     end
 
-    subgraph Output["💾 Output"]
-        Writer[Parquet Writer]
+    subgraph Output["Output"]
+        Writer[Parquet]
     end
 
-    HF["🤗 HuggingFace<br/>Streaming"] --> Driver
-    Driver -->|"ray.remote()"| ObjectStore
-    ObjectStore -->|"Load Balance"| Stage0
+    HF["HuggingFace"] --> Driver
+    Driver --> ObjectStore
+    ObjectStore --> Stage0
     Stage0 --> ObjectStore
-    ObjectStore -->|"Load Balance"| Stage1
+    ObjectStore --> Stage1
     Stage1 --> Writer
 ```
 
-### Worker Pool Detail
+### Worker Pool & Load Balancing
 
 ```mermaid
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#059669', 'primaryTextColor': '#fff', 'primaryBorderColor': '#10b981', 'lineColor': '#6ee7b7', 'secondaryColor': '#064e3b', 'tertiaryColor': '#065f46', 'background': '#0f0f23', 'mainBkg': '#064e3b', 'nodeBorder': '#10b981', 'clusterBkg': '#064e3b', 'clusterBorder': '#10b981'}}}%%
 flowchart LR
-    subgraph Batches["Incoming Batches"]
-        B0["Batch 0"]
-        B1["Batch 1"]
-        B2["Batch 2"]
-        B3["Batch 3"]
-        B4["Batch 4"]
-        B5["Batch 5"]
-        B6["Batch 6"]
-        B7["Batch 7"]
+    subgraph Input["Batches"]
+        B0["B0"] & B1["B1"] & B2["B2"] & B3["B3"]
+        B4["B4"] & B5["B5"] & B6["B6"] & B7["B7"]
     end
 
-    subgraph Stage0["Stage 0: CPU Pool (8 workers)"]
-        direction TB
-        subgraph Row1[" "]
-            direction LR
-            CW0["Worker 0<br/>🦀 Quality"]
-            CW1["Worker 1<br/>🦀 Quality"]
-            CW2["Worker 2<br/>🦀 Quality"]
-            CW3["Worker 3<br/>🦀 Quality"]
-        end
-        subgraph Row2[" "]
-            direction LR
-            CW4["Worker 4<br/>🦀 Quality"]
-            CW5["Worker 5<br/>🦀 Quality"]
-            CW6["Worker 6<br/>🦀 Quality"]
-            CW7["Worker 7<br/>🦀 Quality"]
-        end
+    subgraph CPU["CPU Pool ×8 workers"]
+        C0["C0 🦀"] & C1["C1 🦀"] & C2["C2 🦀"] & C3["C3 🦀"]
+        C4["C4 🦀"] & C5["C5 🦀"] & C6["C6 🦀"] & C7["C7 🦀"]
     end
 
-    subgraph Stage1["Stage 1: GPU Pool (2 workers)"]
-        direction TB
-        GW0["GPU 0<br/>CLIP ViT-B-32"]
-        GW1["GPU 1<br/>CLIP ViT-B-32"]
+    subgraph GPU["GPU Pool ×2 workers"]
+        G0["G0 CLIP"]
+        G1["G1 CLIP"]
     end
 
-    B0 --> CW0
-    B1 --> CW1
-    B2 --> CW2
-    B3 --> CW3
-    B4 --> CW4
-    B5 --> CW5
-    B6 --> CW6
-    B7 --> CW7
+    B0 --> C0
+    B1 --> C1
+    B2 --> C2
+    B3 --> C3
+    B4 --> C4
+    B5 --> C5
+    B6 --> C6
+    B7 --> C7
 
-    CW0 & CW1 & CW2 & CW3 --> GW0
-    CW4 & CW5 & CW6 & CW7 --> GW1
+    C0 & C1 & C2 & C3 --> G0
+    C4 & C5 & C6 & C7 --> G1
 ```
 
-### Pipeline Execution Flow
+### Execution Sequence
 
 ```mermaid
+%%{init: {'theme': 'dark'}}%%
 sequenceDiagram
     participant D as Driver
-    participant OS as Object Store
-    participant CPU as CPU Pool (8 workers)
-    participant GPU as GPU Pool (2 workers)
+    participant OS as ObjectStore
+    participant CPU as CPU ×8
+    participant GPU as GPU ×2
     participant W as Writer
 
-    D->>OS: Put Batch 0-7
+    D->>OS: Submit batches
 
-    par Parallel CPU Processing
-        OS->>CPU: Worker 0 <- Batch 0
-        OS->>CPU: Worker 1 <- Batch 1
-        OS->>CPU: Worker 2 <- Batch 2
-        OS->>CPU: ...
-        OS->>CPU: Worker 7 <- Batch 7
+    par CPU Processing
+        OS->>CPU: Batch 0-7
     end
 
-    CPU->>OS: Return processed batches
+    CPU->>OS: Processed
 
-    par Parallel GPU Processing
-        OS->>GPU: GPU 0 <- Batch 0,1,2,3
-        OS->>GPU: GPU 1 <- Batch 4,5,6,7
+    par GPU Processing
+        OS->>GPU: Batch 0-7
     end
 
-    GPU->>W: Write to Parquet
-    W->>D: Report progress
+    GPU->>W: Write Parquet
+    W->>D: Done
 ```
 
-### Timeline View (8 CPU workers, 2 GPU workers)
+### Timeline (Parallel Execution)
 
 ```mermaid
+%%{init: {'theme': 'dark'}}%%
 gantt
     title Batch Processing Timeline
     dateFormat X
     axisFormat %s
 
-    section CPU Worker 0
-        Batch 0    :c0, 0, 2
-        Batch 8    :c0b, 8, 2
+    section CPU-0
+        B0    :c0, 0, 2
+        B8    :c0b, 8, 2
 
-    section CPU Worker 1
-        Batch 1    :c1, 0, 2
-        Batch 9    :c1b, 8, 2
+    section CPU-1
+        B1    :c1, 0, 2
+        B9    :c1b, 8, 2
 
-    section CPU Worker 7
-        Batch 7    :c7, 0, 2
-        Batch 15   :c7b, 8, 2
+    section CPU-7
+        B7    :c7, 0, 2
+        B15   :c7b, 8, 2
 
-    section GPU Worker 0
-        Batch 0    :g0a, 2, 3
-        Batch 2    :g0b, 5, 3
-        Batch 8    :g0c, 10, 3
+    section GPU-0
+        B0    :g0a, 2, 3
+        B2    :g0b, 5, 3
 
-    section GPU Worker 1
-        Batch 1    :g1a, 2, 3
-        Batch 3    :g1b, 5, 3
-        Batch 9    :g1c, 10, 3
+    section GPU-1
+        B1    :g1a, 2, 3
+        B3    :g1b, 5, 3
 ```
 
 > **Key Points**:
->
-> - **CPU Pool**: High parallelism (e.g., 8 workers) for metadata extraction, quality assessment, filtering
-> - **GPU Pool**: Limited by GPU memory (e.g., 2 workers), each with its own CLIP model instance
-> - **Load Balancing**: Ray automatically distributes batches to available workers in each pool
+> - **CPU Pool**: 8 workers for metadata, quality (🦀 Rust), filtering, dedup
+> - **GPU Pool**: 2 workers for CLIP embeddings (limited by VRAM)
+> - **Load Balancing**: Ray auto-distributes batches to idle workers
 
 ### Operator Hierarchy
 
 ```mermaid
+%%{init: {'theme': 'dark'}}%%
 classDiagram
     class Operator {
         <<abstract>>
