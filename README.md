@@ -1,4 +1,4 @@
-# Multimodal Data Pipeline
+# Webscale Multimodal Data Pipeline
 
 A high-performance, distributed opensource web-scale (hundrends of billions) multimodal data processing pipelines built with Ray, featuring Rust-accelerated and GPU-optimized operators.
 
@@ -17,6 +17,67 @@ This repository aims to replicate SOTA multimodal datapipelines, like
 - [HoneyBee: Data Recipes for Vision-Language Reasoners](https://arxiv.org/pdf/2510.12225)
 - [MiMo-VL](https://arxiv.org/pdf/2506.03569)
 - [Cosmos World Foundation Model Platform for Physical AI](https://arxiv.org/pdf/2501.03575)
+- [Imagen 3](https://arxiv.org/abs/2408.07009)
+
+## Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/duoan/webscale-multimodal-datapipeline.git
+cd webscale-multimodal-datapipeline
+
+# Install with Rust acceleration (recommended)
+uv pip install -e .
+
+# Or install without Rust (pure Python fallback)
+uv sync
+```
+
+> Requires Rust toolchain for building accelerated operators. Install via [rustup](https://rustup.rs/).
+
+## Quick Start
+
+```bash
+# Run pipeline with config
+wmd run --config configs/z_image.yaml
+
+# Or with options
+wmd run -c configs/z_image.yaml --max-samples 1000 --batch-size 500
+```
+
+## Operators
+
+> 🦀 = Rust Accelerated | 🖥️ = GPU Optimized
+
+### Refiners
+
+Refiners enrich records with new fields (inplace).
+
+| Operator | Description | Acceleration | Doc |
+|----------|-------------|--------------|-----|
+| `ImageMetadataRefiner` | Extracts width, height, format, file size | CPU | [doc](operators/refiners/image_metadata.md) |
+| `ImageTechnicalQualityRefiner` | Compression artifacts, information entropy | 🦀 Rust | [doc](operators/refiners/image_technical_quality.md) |
+| `ImageVisualDegradationsRefiner` | Color cast, blurriness, watermark, noise | CPU | [doc](operators/refiners/image_visual_degradations.md) |
+| `ImageClipEmbeddingRefiner` | CLIP embeddings via OpenCLIP | 🖥️ GPU | [doc](operators/refiners/image_clip_embedding.md) |
+| `ImageSigLIPEmbeddingRefiner` | SigLIP2 embeddings via HuggingFace | 🖥️ GPU | [doc](operators/refiners/image_siglip_embedding.md) |
+| `ImageAestheticQualityRefiner` | Aesthetic score (requires CLIP emb) | CPU | [doc](operators/refiners/image_aesthetic_quality.md) |
+| `ImageAIGCDetectorRefiner` | AI-generated image detection (requires SigLIP emb) | CPU | [doc](operators/refiners/image_aigc_detector.md) |
+
+### Filters
+
+Filters remove records based on conditions.
+
+| Operator | Description | Doc |
+|----------|-------------|-----|
+| `ImageQualityFilter` | Filter by size, quality metrics | [doc](operators/filters/image_quality_filter.md) |
+
+### Deduplicators
+
+Deduplicators remove duplicate records.
+
+| Operator | Description | Acceleration | Doc |
+|----------|-------------|--------------|-----|
+| `ImagePhashDeduplicator` | Perceptual hash deduplication | 🦀 Rust | [doc](operators/dedup/image_phash_dedup.md) |
 
 ## Architecture
 
@@ -158,116 +219,9 @@ gantt
 > - **GPU Pool**: 2 workers for CLIP embeddings (limited by VRAM)
 > - **Load Balancing**: Ray auto-distributes batches to idle workers
 
-### Operator Hierarchy
-
-```mermaid
-%%{init: {'theme': 'dark'}}%%
-classDiagram
-    class Operator {
-        <<abstract>>
-        +process_batch(records) list
-        +_process_batch_impl(records)* list
-        +get_stats() dict
-    }
-
-    class Refiner {
-        <<abstract>>
-        +refine_batch(records)* None
-        +get_output_schema()* dict
-    }
-
-    class Filter {
-        <<abstract>>
-        +should_keep_batch(records)* list~bool~
-    }
-
-    class Deduplicator {
-        <<abstract>>
-        +get_dedup_keys_batch(records)* list~str~
-        -backend: DedupBackend
-    }
-
-    class ImageMetadataRefiner {
-        +refine_batch(records)
-    }
-
-    class TechnicalQualityRefiner {
-        +refine_batch(records)
-        -rust_backend: bool
-    }
-
-    class ImageClipEmbeddingRefiner {
-        +refine_batch(records)
-        -model: CLIP
-        -inference_batch_size: int
-    }
-
-    class QualityFilter {
-        +should_keep_batch(records)
-        -min_width: int
-        -min_height: int
-    }
-
-    class PhashDeduplicator {
-        +get_dedup_keys_batch(records)
-        -hash_size: int
-    }
-
-    Operator <|-- Refiner
-    Operator <|-- Filter
-    Operator <|-- Deduplicator
-    Refiner <|-- ImageMetadataRefiner
-    Refiner <|-- TechnicalQualityRefiner
-    Refiner <|-- ImageClipEmbeddingRefiner
-    Filter <|-- QualityFilter
-    Deduplicator <|-- PhashDeduplicator
-```
-
-> 🦀 = Rust Accelerated (via PyO3)
-
-## Features
-
-### Operator Types
-
-| Type | Description | Example |
-|------|-------------|---------|
-| **Refiner** | Enriches records with new fields (inplace) | `ImageMetadataRefiner`, `TechnicalQualityRefiner`, `ImageClipEmbeddingRefiner` |
-| **Filter** | Filters records based on conditions | `QualityFilter` |
-| **Deduplicator** | Removes duplicate records | `PhashDeduplicator` |
-
-### Performance Optimizations
-
-| Component | Optimization | Speedup |
-|-----------|-------------|---------|
-| `TechnicalQualityRefiner` | Rust + Rayon parallel | ~3x |
-| `PhashDeduplicator` | Rust + Rayon parallel | ~2.5x |
-| `ImageClipEmbeddingRefiner` | GPU batch inference + ThreadPool preprocessing | ~1.5x |
-
-## Installation
-
-```bash
-# Clone the repository
-git clone https://github.com/your-org/datapipeline_z_image.git
-cd datapipeline_z_image
-
-# Install dependencies with uv
-uv sync
-
-# Build Rust accelerated operators (optional but recommended)
-cd rust && ./build.sh && cd ..
-uv pip install dist/*.whl
-```
-
-## Quick Start
-
-```bash
-# Run the pipeline with default configuration
-python main.py --config pipeline_config.yaml
-```
-
 ## Configuration
 
-### `pipeline_config.yaml`
+### Example `configs/z_image.yaml`
 
 ```yaml
 # Data source
@@ -280,36 +234,61 @@ data_loader:
 
 # Processing stages
 stages:
+  # Stage 1: Basic metadata and quality (CPU, Rust-accelerated)
   - name: basic_stage
     operators:
       - name: image_metadata_refiner
-      - name: technical_quality_refiner  # Rust-accelerated
-      - name: quality_filter
+      - name: image_technical_quality_refiner  # 🦀 Rust-accelerated
+      - name: image_quality_filter
         params:
           min_width: 128
           min_height: 128
           max_compression_artifacts: 0.8
           min_information_entropy: 0.0
-      - name: phash_deduplicator  # Rust-accelerated
+      - name: image_phash_deduplicator  # 🦀 Rust-accelerated
     worker:
       num_replicas: 2
       resources:
         cpu: 1
 
+  # Stage 2: Embedding extraction (GPU)
   - name: embedding_stage
     operators:
+      # CLIP embeddings for aesthetic scoring
       - name: image_clip_embedding_refiner
         params:
-          model_name: "ViT-B-32"
+          model_name: "ViT-L-14"
           pretrained: "openai"
-          device: "auto"  # auto-detect: mps > cuda > cpu
-          inference_batch_size: 128
-          use_fp16: true  # CUDA only
-          preprocess_workers: 4
+          device: "auto"
+          inference_batch_size: 32
+          use_fp16: true
+      # SigLIP2 embeddings for AIGC detection
+      - name: image_siglip_embedding_refiner
+        params:
+          model_name: "google/siglip2-so400m-patch14-384"
+          device: "auto"
+          inference_batch_size: 32
+          use_fp16: true
     worker:
       num_replicas: 1
       resources:
         cpu: 2
+
+  # Stage 3: Quality scoring (uses pre-computed embeddings)
+  - name: scoring_stage
+    operators:
+      - name: image_aesthetic_quality_refiner
+        params:
+          embedding_field: "image_clip_emb_vit_l_14"
+      - name: image_aigc_detector_refiner
+        params:
+          embedding_field: "image_siglip_emb_so400m_patch14_384"
+          model_path: "./models/image_aigc_detector/classifier.pth"
+          threshold: 0.5
+    worker:
+      num_replicas: 2
+      resources:
+        cpu: 1
 
 # Output
 data_writer:
@@ -324,70 +303,6 @@ executor:
   batch_size: 200
   dedup_num_buckets: 2
 ```
-
-## Operators
-
-### Refiners
-
-#### `ImageMetadataRefiner`
-
-Extracts basic image metadata.
-
-**Output fields:**
-
-- `width`: int - Image width in pixels
-- `height`: int - Image height in pixels
-- `file_size_bytes`: int - File size in bytes
-- `format`: str - Image format (JPEG, PNG, etc.)
-
-#### `TechnicalQualityRefiner`
-
-Assesses technical quality metrics (Rust-accelerated).
-
-**Output fields:**
-
-- `compression_artifacts`: float - Compression artifact score (0-1, lower is better)
-- `information_entropy`: float - Information entropy (higher = more detail)
-
-#### `ImageClipEmbeddingRefiner`
-
-Extracts CLIP embeddings using OpenCLIP models (GPU-optimized).
-
-**Parameters:**
-
-- `model_name`: OpenCLIP model name (default: `"ViT-B-32"`)
-- `pretrained`: Pretrained weights (default: `"openai"`)
-- `device`: Device selection (`"auto"`, `"cuda"`, `"mps"`, `"cpu"`)
-- `inference_batch_size`: GPU batch size (default: 128)
-- `use_fp16`: Use half precision on CUDA (default: true)
-- `preprocess_workers`: Parallel preprocessing threads (default: 4)
-
-**Output fields:**
-
-- `image_clip_emb_{model_name}`: list[float] - CLIP embedding vector
-
-### Filters
-
-#### `QualityFilter`
-
-Filters images based on quality criteria.
-
-**Parameters:**
-
-- `min_width`: Minimum width (default: 256)
-- `min_height`: Minimum height (default: 256)
-- `max_compression_artifacts`: Maximum artifacts score (default: 0.8)
-- `min_information_entropy`: Minimum entropy (default: 3.0)
-
-### Deduplicators
-
-#### `PhashDeduplicator`
-
-Removes duplicate images using perceptual hashing (Rust-accelerated).
-
-**Parameters:**
-
-- `hash_size`: Hash size (default: 16, produces 256-bit hash)
 
 ## Performance
 
@@ -419,107 +334,64 @@ stage_1:
 ============================================================
 ```
 
-## Rust Accelerated Operators
-
-The `rust/` directory contains Rust implementations for CPU-intensive operations:
-
-```bash
-# Build Rust extension
-cd rust
-./build.sh
-
-# Install the wheel
-uv pip install ../dist/rust_accelerated_ops-*.whl
-
-# Test
-python test.py
-```
-
-### Functions
-
-| Function | Description |
-|----------|-------------|
-| `assess_quality(image_bytes)` | Single image quality assessment |
-| `assess_quality_batch(image_bytes_list)` | Batch quality assessment (parallel) |
-| `compute_phash(image_bytes, hash_size)` | Single image perceptual hash |
-| `compute_phash_batch(image_bytes_list, hash_size)` | Batch perceptual hash (parallel) |
-
 ## Project Structure
 
 ```text
-datapipeline_z_image/
-├── framework/
-│   ├── operator.py      # Base classes: Operator, Refiner, Filter, Deduplicator
-│   ├── executor.py      # Ray-based distributed executor
-│   ├── backend.py       # Deduplication backends
-│   └── base.py          # Configuration dataclasses
-├── operators/
-│   ├── refiners/
-│   │   ├── image_metadata.py
-│   │   ├── technical_quality.py
-│   │   └── image_clip_embedding.py
-│   ├── filters/
-│   │   └── quality_filter.py
-│   └── dedup/
-│       └── phash_dedup.py
-├── loaders/
-│   └── huggingface_loader.py
-├── writers/
-│   └── parquet_writer.py
-├── rust/
-│   ├── src/lib.rs       # Rust implementation
-│   ├── Cargo.toml
-│   └── build.sh
-├── main.py              # Entry point
-├── pipeline_config.yaml # Configuration
+webscale-multimodal-datapipeline/
+├── webscale_multimodal_datapipeline/   # Main package
+│   ├── __init__.py
+│   ├── cli.py                          # CLI entry point (wmd command)
+│   ├── rust_accelerated_ops.so         # Built Rust extension
+│   ├── framework/                      # Base classes and executor
+│   ├── operators/                      # Operators (refiners, filters, dedup)
+│   ├── models/                         # Model definitions & trainers
+│   ├── loaders/                        # Data loaders
+│   └── writers/                        # Data writers
+├── src/lib.rs                          # Rust source code
+├── scripts/                            # Training scripts
+├── configs/                            # Pipeline configurations
+├── checkpoints/                        # Model checkpoints
+├── tests/                              # Unit tests
+├── benchmarks/                         # Performance benchmarks
+├── Cargo.toml                          # Rust dependencies
+├── pyproject.toml                      # Python config (maturin build)
 └── README.md
 ```
 
 ## Extending the Pipeline
 
-### Custom Refiner
-
 ```python
-from framework import Refiner
+from webscale_multimodal_datapipeline import Refiner
 
 class MyCustomRefiner(Refiner):
     def refine_batch(self, records: list[dict]) -> None:
-        """Modify records inplace to add new fields."""
         for record in records:
-            record["my_new_field"] = compute_something(record)
+            record["my_field"] = compute(record)
 
     def get_output_schema(self) -> dict:
-        return {"my_new_field": pa.float32()}
-```
-
-### Custom Filter
-
-```python
-from framework import Filter
-
-class MyCustomFilter(Filter):
-    def should_keep_batch(self, records: list[dict]) -> list[bool]:
-        """Return list of booleans indicating which records to keep."""
-        return [record.get("score", 0) > 0.5 for record in records]
-```
-
-### Custom Deduplicator
-
-```python
-from framework import Deduplicator
-
-class MyCustomDeduplicator(Deduplicator):
-    def get_dedup_keys_batch(self, records: list[dict]) -> list[str]:
-        """Return list of deduplication keys."""
-        return [record.get("hash", record["id"]) for record in records]
+        return {"my_field": pa.float32()}
 ```
 
 ## References
 
-- Paper: [Z-Image: An Efficient Image Generation Foundation Model](https://arxiv.org/pdf/2511.22699)
-- GitHub: <https://github.com/Tongyi-MAI/Z-Image>
-- OpenCLIP: <https://github.com/mlfoundations/open_clip>
+- [Z-Image](https://arxiv.org/pdf/2511.22699) - Image generation foundation model
+- [Imagen 3](https://arxiv.org/abs/2408.07009) - AIGC content detection
+- [SigLIP2](https://huggingface.co/google/siglip2-so400m-patch14-384) - Vision encoder
+- [OpenCLIP](https://github.com/mlfoundations/open_clip) - CLIP implementation
+- [Improved Aesthetic Predictor](https://github.com/christophschuhmann/improved-aesthetic-predictor) - Aesthetic scoring
 
 ## License
 
 MIT License
+
+## Citation
+
+```bibtex
+@software{webscale_multimodal_datapipeline,
+  author       = {Duo An},
+  title        = {Webscale Multimodal Data Pipeline},
+  year         = {2025},
+  publisher    = {GitHub},
+  url          = {https://github.com/duoan/webscale-multimodal-datapipeline}
+}
+```

@@ -1,0 +1,18 @@
+[package]
+name = "webscale-multimodal-datapipeline"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_accelerated_ops"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.27.2", features = ["extension-module"] }
+image = "0.25"
+rayon = "1.11"
+image_hasher = "3.0"
+
+[profile.release]
+opt-level = 3
+lto = true

@@ -71,8 +71,8 @@ profiling_results.json
 *.log
 
 # Rust
-rust/target/
-rust/Cargo.lock
+target/
+Cargo.lock
 
 # OS
 .DS_Store

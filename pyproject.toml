@@ -1,9 +1,28 @@
 [project]
-name = "datapipeline-z-image"
+name = "webscale-multimodal-datapipeline"
 version = "0.1.0"
-description = "Data pipeline for Z-Image: Efficient Image Generation Foundation Model"
+description = "High-performance, distributed web-scale multimodal data processing pipeline with Ray, featuring Rust-accelerated and GPU-optimized operators"
 readme = "README.md"
 requires-python = ">=3.13"
+authors = [{ name = "Duo An", email = "duoan@example.com" }]
+keywords = [
+    "data-pipeline",
+    "multimodal",
+    "ray",
+    "distributed",
+    "image-processing",
+    "clip",
+    "siglip",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
 dependencies = [
     "datasets>=4.5.0",
     "ffmpeg-python>=0.2.0",
@@ -17,6 +36,9 @@ dependencies = [
     "scikit-learn>=1.3.0",
     "joblib>=1.3.0",
     "open-clip-torch>=3.2.0",
+    "huggingface-hub>=0.20.0",
+    "safetensors>=0.4.0",
+    "transformers>=4.57.6",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +52,23 @@ ml = [
     "torchvision>=0.15.0",     # Torchvision for image processing
     "open-clip-torch>=2.20.0", # OpenCLIP for image embeddings
 ]
+
+[project.urls]
+Homepage = "https://github.com/duoan/webscale-multimodal-datapipeline"
+Repository = "https://github.com/duoan/webscale-multimodal-datapipeline"
+Documentation = "https://github.com/duoan/webscale-multimodal-datapipeline#readme"
+
+[project.scripts]
+wmd = "webscale_multimodal_datapipeline.cli:main"
+
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+python-source = "."
+module-name = "webscale_multimodal_datapipeline.rust_accelerated_ops"
 
 [tool.ruff]
 line-length = 120
@@ -48,12 +87,12 @@ select = [
     "DTZ", # flake8-datetimez
 ]
 ignore = [
-    "E501",  # line too long (handled by formatter)
-    "B008",  # do not perform function calls in argument defaults
+    "E501", # line too long (handled by formatter)
+    "B008", # do not perform function calls in argument defaults
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["framework", "operators", "loaders", "writers", "models"]
+known-first-party = ["webscale_multimodal_datapipeline"]
 
 [tool.ruff.format]
 quote-style = "double"

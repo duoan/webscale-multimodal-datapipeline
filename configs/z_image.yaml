@@ -1,0 +1,133 @@
+# Pipeline Configuration for Z-Image Data Profiling
+
+data_loader:
+  type: HuggingFaceDataLoader
+  params:
+    dataset_name: "jp1924/Laion400m-1"
+    split: "train"
+    streaming: true
+
+stages:
+  - name: basic_stage
+    operators:
+      - name: image_metadata_refiner
+      - name: image_technical_quality_refiner # Auto-uses Rust if available (3-10x faster), falls back to Python
+      - name: image_quality_filter
+        params:
+          min_width: 128
+          min_height: 128
+          max_compression_artifacts: 0.8
+          min_information_entropy: 0.0
+      - name: image_phash_deduplicator
+    worker:
+      num_replicas: 2 # Reduced from 4 to 2 to free up CPUs for embedding_stage
+      resources:
+        cpu: 0.2 # Number of CPUs per worker instance
+
+  # - name: model_stage
+  #   operators:
+  #     - name: visual_degradations_refiner
+  #       params:
+  #         model_path: null
+  #       enabled: true
+  #   worker:
+  #     num_replicas: 2 # Create 2 instances of workers for this stage
+  #     resources:
+  #       cpu: 1 # Number of CPUs per worker instance
+  #       gpu: 0 # Number of GPUs per worker instance
+
+  # - name: embedding_stage
+  #   operators:
+  #     - name: image_clip_embedding_refiner
+  #       params:
+  #         model_name: "ViT-B-32" # 512-dim embedding
+  #         pretrained: "openai"
+  #         device: "auto"
+  #         normalize: true
+  #         inference_batch_size: 128
+  #         use_fp16: true
+  #         preprocess_workers: 4
+  #       enabled: true
+  #   worker:
+  #     num_replicas: 1 # Single worker for GPU stage (avoid GPU contention)
+  #     resources:
+  #       cpu: 1 # More CPUs for preprocessing threads
+  #       gpu: 0 # Set to 1 if using CUDA GPU
+
+  - name: visual_degradation_scoring_stage
+    operators:
+      - name: image_visual_degradations_refiner
+        params:
+          model_path: checkpoints/multihead_quality_model.pth
+    worker:
+      num_replicas: 1 # Single worker for GPU stage (avoid GPU contention)
+      resources:
+        cpu: 1 # More CPUs for preprocessing threads
+        gpu: 0 # Set to 1 if using CUDA GPU
+
+  # Aesthetic Quality Scoring Stage (CLIP+MLP aesthetic predictor)
+  # Uses the improved-aesthetic-predictor model from:
+  # https://github.com/christophschuhmann/improved-aesthetic-predictor
+  # Output: image_aesthetic_score (typically 1-10, higher = more visually appealing)
+  #
+  # RECOMMENDED: Use embedding_field to reuse CLIP embeddings from a previous stage.
+  # This avoids redundant CLIP computation. Requires ViT-L-14 embeddings (768-dim).
+  #
+  # Example with pre-computed embeddings (recommended):
+  - name: clip_embedding_stage
+    operators:
+      - name: image_clip_embedding_refiner
+        params:
+          model_name: "ViT-L-14" # Must be ViT-L-14 for aesthetic predictor
+          pretrained: "openai"
+          inference_batch_size: 32
+    worker:
+      num_replicas: 1
+      resources:
+        cpu: 1
+        gpu: 0
+
+  - name: aesthetic_quality_stage
+    operators:
+      - name: image_aesthetic_quality_refiner
+        params:
+          embedding_field: "image_clip_emb_vit_l_14" # Reuse embeddings from previous stage
+          inference_batch_size: 32
+    worker:
+      num_replicas: 1
+      resources:
+        cpu: 1
+  #
+  # Example standalone (computes CLIP internally, slower):
+  # - name: aesthetic_quality_stage
+  #   operators:
+  #     - name: image_aesthetic_quality_refiner
+  #       params:
+  #         embedding_field: null       # Compute embeddings internally
+  #         clip_model_name: "ViT-L-14"
+  #         clip_pretrained: "openai"
+  #         device: "auto"
+  #         inference_batch_size: 32
+  #         use_fp16: true
+  #   worker:
+  #     num_replicas: 1
+  #     resources:
+  #       cpu: 1
+  #       gpu: 0
+
+data_writer:
+  type: ParquetDataWriter
+  params:
+    output_path: "./parquet_data" # Directory path for output Parquet files
+    table_name: "image_profiles" # Base name for output files
+
+executor:
+  max_samples: 1000
+  batch_size: 200
+  dedup_num_buckets: 2
+  # dedup_num_buckets: 16  # Default: 16 buckets (sufficient for small datasets)
+  # For large datasets (e.g., 100B keys), increase to 1000-10000 buckets
+  # to keep ~10M-100M keys per bucket for better performance
+  # num_cpus: Optional - Only for local development to limit Ray CPU usage.
+  # In distributed clusters, CPU is managed by the cluster itself.
+  # Leave unset to let Ray auto-detect available CPUs.
