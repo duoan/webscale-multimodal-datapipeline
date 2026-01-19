@@ -10,18 +10,18 @@ from framework import OperatorRegistry
 
 from .image_clip_embedding import ImageClipEmbeddingRefiner
 from .image_metadata import ImageMetadataRefiner
-from .technical_quality import TechnicalQualityRefiner
-from .visual_degradations import VisualDegradationsRefiner
+from .image_technical_quality import ImageTechnicalQualityRefiner
+from .image_visual_degradations import ImageVisualDegradationsRefiner
 
 # Register all refiners with the framework
 OperatorRegistry.register("ImageMetadataRefiner", ImageMetadataRefiner)
-OperatorRegistry.register("TechnicalQualityRefiner", TechnicalQualityRefiner)  # Auto-uses Rust if available
-OperatorRegistry.register("VisualDegradationsRefiner", VisualDegradationsRefiner)
+OperatorRegistry.register("ImageTechnicalQualityRefiner", ImageTechnicalQualityRefiner)  # Auto-uses Rust if available
+OperatorRegistry.register("ImageVisualDegradationsRefiner", ImageVisualDegradationsRefiner)
 OperatorRegistry.register("ImageClipEmbeddingRefiner", ImageClipEmbeddingRefiner)
 
 __all__ = [
     "ImageMetadataRefiner",
-    "TechnicalQualityRefiner",
-    "VisualDegradationsRefiner",
+    "ImageTechnicalQualityRefiner",
+    "ImageVisualDegradationsRefiner",
     "ImageClipEmbeddingRefiner",
 ]

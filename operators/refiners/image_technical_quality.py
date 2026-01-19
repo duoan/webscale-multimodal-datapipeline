@@ -9,10 +9,7 @@ This is a Refiner that enriches records with quality metrics.
 Automatically uses Rust backend (3-10x faster) if available, otherwise falls back to Python implementation.
 """
 
-import importlib.util
-import shutil
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -21,47 +18,34 @@ from PIL import Image
 
 from framework import Refiner
 
+# Field name constants
+FIELD_COMPRESSION_ARTIFACTS = "image_compression_artifacts"
+FIELD_INFORMATION_ENTROPY = "image_information_entropy"
+
+OUTPUT_FIELDS = [FIELD_COMPRESSION_ARTIFACTS, FIELD_INFORMATION_ENTROPY]
+
 # Try to load Rust extension (auto-acceleration)
-# Priority: 1. Installed package, 2. Local .so file
 RUST_BACKEND_AVAILABLE = False
-_assess_quality_rust = None
 _assess_quality_batch_rust = None
 
 try:
-    # First, try to import the installed package (preferred)
     import rust_accelerated_ops as _rust_module
 
-    _assess_quality_rust = _rust_module.assess_quality
-    _assess_quality_batch_rust = getattr(_rust_module, "assess_quality_batch", None)
-    RUST_BACKEND_AVAILABLE = True
+    _assess_quality_batch_rust = getattr(_rust_module, "image_assess_quality_batch", None)
+    if _assess_quality_batch_rust is not None:
+        RUST_BACKEND_AVAILABLE = True
 except ImportError:
-    # Fallback: try to load from local build
-    try:
-        rust_lib_dir = Path(__file__).parent.parent.parent / "rust" / "target" / "release"
-        so_path = rust_lib_dir / "technical_quality.so"
-
-        # Ensure .so file exists (copy from .dylib if needed)
-        if not so_path.exists():
-            dylib_path = rust_lib_dir / "libtechnical_quality.dylib"
-            if dylib_path.exists():
-                shutil.copy(dylib_path, so_path)
-
-        if so_path.exists():
-            spec = importlib.util.spec_from_file_location("technical_quality", so_path)
-            if spec and spec.loader:
-                _rust_module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(_rust_module)
-                _assess_quality_rust = _rust_module.assess_quality
-                _assess_quality_batch_rust = getattr(_rust_module, "assess_quality_batch", None)
-                RUST_BACKEND_AVAILABLE = True
-    except (ImportError, OSError):
-        pass
+    pass
 
 
-class TechnicalQualityRefiner(Refiner):
-    """Refiner for technical quality assessment (compression artifacts, entropy).
+class ImageTechnicalQualityRefiner(Refiner):
+    """Refiner for image technical quality assessment (compression artifacts, entropy).
 
     Automatically uses Rust backend (3-10x faster) if available, otherwise falls back to Python.
+
+    Output fields:
+    - image_compression_artifacts: Compression artifact score (0-1, higher = more artifacts)
+    - image_information_entropy: Shannon entropy (higher = more information/detail)
     """
 
     def refine_batch(self, records: list[dict[str, Any]]) -> None:
@@ -79,8 +63,8 @@ class TechnicalQualityRefiner(Refiner):
                 batch_results = _assess_quality_batch_rust(image_bytes_list)
 
                 for record, (ca, ent) in zip(records, batch_results, strict=False):
-                    record["compression_artifacts"] = float(ca)
-                    record["information_entropy"] = float(ent)
+                    record[FIELD_COMPRESSION_ARTIFACTS] = float(ca)
+                    record[FIELD_INFORMATION_ENTROPY] = float(ent)
                 return
             except Exception:
                 pass  # Fallback to Python
@@ -91,14 +75,14 @@ class TechnicalQualityRefiner(Refiner):
             if isinstance(img_obj, dict) and "bytes" in img_obj:
                 try:
                     result = self._refine_python(img_obj["bytes"])
-                    record["compression_artifacts"] = result["compression_artifacts"]
-                    record["information_entropy"] = result["information_entropy"]
+                    record[FIELD_COMPRESSION_ARTIFACTS] = result[FIELD_COMPRESSION_ARTIFACTS]
+                    record[FIELD_INFORMATION_ENTROPY] = result[FIELD_INFORMATION_ENTROPY]
                 except Exception:
-                    record["compression_artifacts"] = 0.0
-                    record["information_entropy"] = 0.0
+                    record[FIELD_COMPRESSION_ARTIFACTS] = 0.0
+                    record[FIELD_INFORMATION_ENTROPY] = 0.0
             else:
-                record["compression_artifacts"] = 0.0
-                record["information_entropy"] = 0.0
+                record[FIELD_COMPRESSION_ARTIFACTS] = 0.0
+                record[FIELD_INFORMATION_ENTROPY] = 0.0
 
     def _refine_python(self, image_bytes: bytes) -> dict[str, Any]:
         """Python fallback implementation (slower but always available)."""
@@ -106,7 +90,10 @@ class TechnicalQualityRefiner(Refiner):
         compression_artifacts = self._detect_compression_artifacts(img, image_bytes)
         entropy = self._calculate_entropy(img)
 
-        return {"compression_artifacts": compression_artifacts, "information_entropy": entropy}
+        return {
+            FIELD_COMPRESSION_ARTIFACTS: compression_artifacts,
+            FIELD_INFORMATION_ENTROPY: entropy,
+        }
 
     def _detect_compression_artifacts(
         self,
@@ -201,6 +188,6 @@ class TechnicalQualityRefiner(Refiner):
     def get_output_schema(self) -> dict[str, pa.DataType]:
         """Return output schema for new fields added by this refiner."""
         return {
-            "compression_artifacts": pa.float32(),
-            "information_entropy": pa.float32(),
+            FIELD_COMPRESSION_ARTIFACTS: pa.float32(),
+            FIELD_INFORMATION_ENTROPY: pa.float32(),
         }

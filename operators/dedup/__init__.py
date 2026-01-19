@@ -7,11 +7,11 @@ Dedups are automatically registered when this package is imported.
 
 from framework import OperatorRegistry
 
-from .phash_dedup import PhashDeduplicator
+from .image_phash_dedup import ImagePhashDeduplicator
 
 # Register all dedup operators with the framework
-OperatorRegistry.register("PhashDeduplicator", PhashDeduplicator)
+OperatorRegistry.register("ImagePhashDeduplicator", ImagePhashDeduplicator)
 
 __all__ = [
-    "PhashDeduplicator",
+    "ImagePhashDeduplicator",
 ]
