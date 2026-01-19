@@ -107,16 +107,20 @@ class Executor:
 
                 worker_name = f"{stage_config.name}_{replica_id}" if num_replicas > 1 else stage_config.name
 
-                # Extract num_cpus from resources if present, otherwise use default
+                # Extract num_cpus and num_gpus from resources if present, otherwise use defaults
                 num_cpus = stage_config.worker.resources.get("cpu", 1)
-                # Create a copy of resources without 'cpu' (Ray handles num_cpus separately)
-                ray_resources = {k: v for k, v in stage_config.worker.resources.items() if k != "cpu"}
+                num_gpus = stage_config.worker.resources.get("gpu", 0)
+                # Create a copy of resources without 'cpu' and 'gpu' (Ray handles these separately)
+                ray_resources = {k: v for k, v in stage_config.worker.resources.items() if k not in ("cpu", "gpu")}
 
                 # Create Ray Actor worker with name for Ray Dashboard visibility
                 # Ray Actor names must be unique
                 actor_name = f"pipeline_{worker_name}"
                 worker = RayWorker.options(
-                    name=actor_name, num_cpus=num_cpus, resources=ray_resources if ray_resources else None
+                    name=actor_name,
+                    num_cpus=num_cpus,
+                    num_gpus=num_gpus,
+                    resources=ray_resources if ray_resources else None,
                 ).remote(worker_name, stage_operators, data_writer=worker_writer, num_cpus=num_cpus)
 
                 stage_workers.append(worker)

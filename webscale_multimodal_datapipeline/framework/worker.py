@@ -170,7 +170,11 @@ class RayWorker:
     """
 
     def __init__(
-        self, name: str, operators: list[Operator], data_writer: DataWriter | None = None, num_cpus: int | None = None
+        self,
+        name: str,
+        operators: list[Operator],
+        data_writer: DataWriter | None = None,
+        num_cpus: int | None = None,
     ):
         """Initialize Ray worker.
 

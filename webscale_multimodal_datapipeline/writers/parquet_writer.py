@@ -17,7 +17,7 @@ from webscale_multimodal_datapipeline.framework import DataWriter
 class ParquetDataWriter(DataWriter):
     """DataWriter that writes to Parquet files using PyArrow."""
 
-    def __init__(self, output_path: str, table_name: str = "profiles"):
+    def __init__(self, output_path: str, table_name: str = "default"):
         """Initialize Parquet writer.
 
         Args:
@@ -42,7 +42,7 @@ class ParquetDataWriter(DataWriter):
         arrow_table = pa.Table.from_pylist(data)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        parquet_path = os.path.join(self.output_path, f"{self.table_name}_{timestamp}.parquet")
+        parquet_path = os.path.join(self.output_path, self.table_name, f"part_{timestamp}.parquet")
 
         # Write with compression and optimized settings
         pq.write_table(

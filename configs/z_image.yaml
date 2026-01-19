@@ -22,7 +22,7 @@ stages:
     worker:
       num_replicas: 2 # Reduced from 4 to 2 to free up CPUs for embedding_stage
       resources:
-        cpu: 0.2 # Number of CPUs per worker instance
+        cpu: 1 # Number of CPUs per worker instance
 
   # - name: model_stage
   #   operators:
@@ -60,10 +60,10 @@ stages:
         params:
           model_path: checkpoints/multihead_quality_model.pth
     worker:
-      num_replicas: 1 # Single worker for GPU stage (avoid GPU contention)
+      num_replicas: 2 # Single worker for GPU stage (avoid GPU contention)
       resources:
         cpu: 1 # More CPUs for preprocessing threads
-        gpu: 0 # Set to 1 if using CUDA GPU
+        gpu: 0.2 # Set to 1 if using CUDA GPU
 
   # Aesthetic Quality Scoring Stage (CLIP+MLP aesthetic predictor)
   # Uses the improved-aesthetic-predictor model from:
@@ -82,10 +82,10 @@ stages:
           pretrained: "openai"
           inference_batch_size: 32
     worker:
-      num_replicas: 1
+      num_replicas: 8
       resources:
-        cpu: 1
-        gpu: 0
+        cpu: 2
+        gpu: 0.25
 
   - name: aesthetic_quality_stage
     operators:
@@ -94,9 +94,10 @@ stages:
           embedding_field: "image_clip_emb_vit_l_14" # Reuse embeddings from previous stage
           inference_batch_size: 32
     worker:
-      num_replicas: 1
+      num_replicas: 2
       resources:
         cpu: 1
+        gpu: 0.1
   #
   # Example standalone (computes CLIP internally, slower):
   # - name: aesthetic_quality_stage
@@ -119,11 +120,11 @@ data_writer:
   type: ParquetDataWriter
   params:
     output_path: "./parquet_data" # Directory path for output Parquet files
-    table_name: "image_profiles" # Base name for output files
+    table_name: "z_image" # Base name for output files
 
 executor:
-  max_samples: 1000
-  batch_size: 200
+  max_samples: 102400
+  batch_size: 1024
   dedup_num_buckets: 2
   # dedup_num_buckets: 16  # Default: 16 buckets (sufficient for small datasets)
   # For large datasets (e.g., 100B keys), increase to 1000-10000 buckets
