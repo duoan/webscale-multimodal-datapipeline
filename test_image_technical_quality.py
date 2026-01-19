@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script to compare Python and Rust implementations of TechnicalQualityRefiner.
+Test script to compare Python and Rust implementations of ImageTechnicalQualityRefiner.
 
 This script verifies that both implementations produce consistent results.
 """
@@ -14,10 +14,12 @@ from PIL import Image
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from operators.refiners.technical_quality import (
+from operators.refiners.image_technical_quality import (
+    FIELD_COMPRESSION_ARTIFACTS,
+    FIELD_INFORMATION_ENTROPY,
     RUST_BACKEND_AVAILABLE,
-    TechnicalQualityRefiner,
-    _assess_quality_rust,
+    ImageTechnicalQualityRefiner,
+    _assess_quality_batch_rust,
 )
 
 
@@ -31,27 +33,25 @@ def create_test_image(width: int = 200, height: int = 200, mode: str = "RGB") ->
 
 def test_python_implementation():
     """Test Python implementation directly."""
-
-    refiner = TechnicalQualityRefiner()
+    refiner = ImageTechnicalQualityRefiner()
 
     # Force Python implementation by temporarily disabling Rust
-    original_rust_available = RUST_BACKEND_AVAILABLE
-    import operators.refiners.technical_quality as tq_module
+    import operators.refiners.image_technical_quality as tq_module
 
+    original_rust_available = tq_module.RUST_BACKEND_AVAILABLE
     tq_module.RUST_BACKEND_AVAILABLE = False
 
     try:
-        record = {"id": "test", "image": {"bytes": create_test_image()}}
-        result = refiner.refine(record)
+        image_bytes = create_test_image()
+        result = refiner._refine_python(image_bytes)
 
-        assert "compression_artifacts" in result
-        assert "information_entropy" in result
-        assert isinstance(result["compression_artifacts"], float)
-        assert isinstance(result["information_entropy"], float)
+        assert FIELD_COMPRESSION_ARTIFACTS in result
+        assert FIELD_INFORMATION_ENTROPY in result
+        assert isinstance(result[FIELD_COMPRESSION_ARTIFACTS], float)
+        assert isinstance(result[FIELD_INFORMATION_ENTROPY], float)
 
-        return result["compression_artifacts"], result["information_entropy"]
+        return result[FIELD_COMPRESSION_ARTIFACTS], result[FIELD_INFORMATION_ENTROPY]
     finally:
-        # Restore Rust availability
         tq_module.RUST_BACKEND_AVAILABLE = original_rust_available
 
 
@@ -61,7 +61,8 @@ def test_rust_implementation():
         return None
 
     image_bytes = create_test_image()
-    compression_artifacts, entropy = _assess_quality_rust(image_bytes)
+    results = _assess_quality_batch_rust([image_bytes])
+    compression_artifacts, entropy = results[0]
 
     return float(compression_artifacts), float(entropy)
 
@@ -69,7 +70,7 @@ def test_rust_implementation():
 def test_both_implementations():
     """Compare Python and Rust implementations on various test cases."""
     print("=" * 60)
-    print("Testing TechnicalQualityRefiner implementations")
+    print("Testing ImageTechnicalQualityRefiner implementations")
     print("=" * 60)
 
     if RUST_BACKEND_AVAILABLE:
@@ -84,13 +85,15 @@ def test_both_implementations():
         ("Medium RGB", 500, 500, "RGB"),
         ("Large RGB", 2000, 2000, "RGB"),
         ("Grayscale", 200, 200, "L"),
-        ("Complex pattern", 256, 256, "RGB"),  # Will use actual complex image
+        ("Complex pattern", 256, 256, "RGB"),
     ]
 
     max_diff_artifacts = 0.0
     max_diff_entropy = 0.0
     passed_tests = 0
     total_tests = 0
+
+    refiner = ImageTechnicalQualityRefiner()
 
     for test_name, width, height, mode in test_cases:
         print(f"Test: {test_name} ({width}x{height}, {mode})")
@@ -113,7 +116,9 @@ def test_both_implementations():
 
         # Test Python implementation
         try:
-            python_artifacts, python_entropy = test_python_direct(image_bytes)
+            python_result = refiner._refine_python(image_bytes)
+            python_artifacts = python_result[FIELD_COMPRESSION_ARTIFACTS]
+            python_entropy = python_result[FIELD_INFORMATION_ENTROPY]
         except Exception as e:
             print(f"  ❌ Python implementation failed: {e}")
             continue
@@ -121,7 +126,8 @@ def test_both_implementations():
         # Test Rust implementation
         if RUST_BACKEND_AVAILABLE:
             try:
-                rust_artifacts, rust_entropy = _assess_quality_rust(image_bytes)
+                rust_results = _assess_quality_batch_rust([image_bytes])
+                rust_artifacts, rust_entropy = rust_results[0]
                 rust_artifacts = float(rust_artifacts)
                 rust_entropy = float(rust_entropy)
             except Exception as e:
@@ -136,7 +142,6 @@ def test_both_implementations():
             max_diff_entropy = max(max_diff_entropy, diff_entropy)
 
             # Check if differences are within acceptable tolerance
-            # Floating point precision differences are expected
             tolerance_artifacts = 1e-5
             tolerance_entropy = 1e-5
 
@@ -178,25 +183,6 @@ def test_both_implementations():
             print("⚠ Implementations have small numerical differences (may be acceptable)")
 
     return passed_tests == total_tests
-
-
-def test_python_direct(image_bytes: bytes):
-    """Test Python implementation directly on image bytes."""
-
-    refiner = TechnicalQualityRefiner()
-
-    # Temporarily disable Rust to force Python implementation
-    import operators.refiners.technical_quality as tq_module
-
-    original_rust_available = tq_module.RUST_BACKEND_AVAILABLE
-    tq_module.RUST_BACKEND_AVAILABLE = False
-
-    try:
-        record = {"id": "test", "image": {"bytes": image_bytes}}
-        result = refiner._refine_python(record, "test", image_bytes)
-        return result["compression_artifacts"], result["information_entropy"]
-    finally:
-        tq_module.RUST_BACKEND_AVAILABLE = original_rust_available
 
 
 if __name__ == "__main__":

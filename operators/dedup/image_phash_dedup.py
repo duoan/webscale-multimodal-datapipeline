@@ -8,30 +8,26 @@ Auto-uses Rust backend (faster) if available, otherwise falls back to imagehash.
 from io import BytesIO
 from typing import Any
 
+import imagehash
+from PIL import Image
+
 from framework import Deduplicator
 
-# Try to load Rust phash functions (faster)
+# Try to load Rust phash batch function (faster)
 RUST_PHASH_AVAILABLE = False
-_compute_phash_rust = None
 _compute_phash_batch_rust = None
 
 try:
     import rust_accelerated_ops as _rust_module
 
-    _compute_phash_rust = getattr(_rust_module, "compute_phash", None)
-    _compute_phash_batch_rust = getattr(_rust_module, "compute_phash_batch", None)
-    if _compute_phash_rust is not None:
+    _compute_phash_batch_rust = getattr(_rust_module, "image_compute_phash_batch", None)
+    if _compute_phash_batch_rust is not None:
         RUST_PHASH_AVAILABLE = True
 except ImportError:
     pass
 
-# Fallback imports (only if Rust not available)
-if not RUST_PHASH_AVAILABLE:
-    import imagehash
-    from PIL import Image
 
-
-class PhashDeduplicator(Deduplicator):
+class ImagePhashDeduplicator(Deduplicator):
     """Deduplicates records based on perceptual hash.
 
     Auto-uses Rust backend (faster) if available, otherwise falls back to imagehash.
@@ -62,16 +58,13 @@ class PhashDeduplicator(Deduplicator):
             except Exception:
                 computed_phashes = []
 
-        # Fallback: compute individually if Rust batch failed
+        # Fallback: compute individually with Python imagehash if Rust batch failed
         if image_bytes_list and len(computed_phashes) != len(image_bytes_list):
             computed_phashes = []
             for img_bytes in image_bytes_list:
                 try:
-                    if RUST_PHASH_AVAILABLE and _compute_phash_rust:
-                        computed_phashes.append(_compute_phash_rust(img_bytes, self.hash_size))
-                    else:
-                        img = Image.open(BytesIO(img_bytes))
-                        computed_phashes.append(str(imagehash.phash(img, hash_size=self.hash_size)))
+                    img = Image.open(BytesIO(img_bytes))
+                    computed_phashes.append(str(imagehash.phash(img, hash_size=self.hash_size)))
                 except Exception:
                     computed_phashes.append("")
 

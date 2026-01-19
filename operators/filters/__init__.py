@@ -7,11 +7,11 @@ Filters are automatically registered when this package is imported.
 
 from framework import OperatorRegistry
 
-from .quality_filter import QualityFilter
+from .image_quality_filter import ImageQualityFilter
 
 # Register all filters with the framework
-OperatorRegistry.register("QualityFilter", QualityFilter)
+OperatorRegistry.register("ImageQualityFilter", ImageQualityFilter)
 
 __all__ = [
-    "QualityFilter",
+    "ImageQualityFilter",
 ]

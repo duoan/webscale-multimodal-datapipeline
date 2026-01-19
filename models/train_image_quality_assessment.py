@@ -44,7 +44,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, random_split
 
-from models.quality_assessment import (
+from models.image_quality_assessment import (
     RECOMMENDED_DATASETS,
     DegradationConfig,
     MultiHeadQualityDataset,

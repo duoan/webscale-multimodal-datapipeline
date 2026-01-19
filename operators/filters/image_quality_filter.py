@@ -8,9 +8,21 @@ from typing import Any
 
 from framework import Filter
 
+# Import field name constants from refiners
+from operators.refiners.image_metadata import FIELD_HEIGHT, FIELD_WIDTH
+from operators.refiners.image_technical_quality import (
+    FIELD_COMPRESSION_ARTIFACTS,
+    FIELD_INFORMATION_ENTROPY,
+)
 
-class QualityFilter(Filter):
-    """Filter records based on quality metrics."""
+
+class ImageQualityFilter(Filter):
+    """Filter records based on image quality metrics.
+
+    Uses fields from ImageMetadataRefiner and ImageTechnicalQualityRefiner:
+    - image_width, image_height
+    - image_compression_artifacts, image_information_entropy
+    """
 
     def __init__(
         self,
@@ -29,10 +41,10 @@ class QualityFilter(Filter):
         """Determine which records meet quality criteria."""
         results = []
         for record in records:
-            width = record.get("width", 0)
-            height = record.get("height", 0)
-            compression_artifacts = record.get("compression_artifacts", 0.0)
-            information_entropy = record.get("information_entropy", 0.0)
+            width = record.get(FIELD_WIDTH, 0)
+            height = record.get(FIELD_HEIGHT, 0)
+            compression_artifacts = record.get(FIELD_COMPRESSION_ARTIFACTS, 0.0)
+            information_entropy = record.get(FIELD_INFORMATION_ENTROPY, 0.0)
 
             keep = (
                 width >= self.min_width

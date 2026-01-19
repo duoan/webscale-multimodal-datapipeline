@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Performance benchmark to compare Python vs Rust implementations of TechnicalQualityRefiner.
+Performance benchmark to compare Python vs Rust implementations of ImageTechnicalQualityRefiner.
 
 This script measures the actual performance difference between Python and Rust implementations.
 """
@@ -15,10 +15,10 @@ from PIL import Image
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from operators.refiners.technical_quality import (
+from operators.refiners.image_technical_quality import (
     RUST_BACKEND_AVAILABLE,
-    TechnicalQualityRefiner,
-    _assess_quality_rust,
+    ImageTechnicalQualityRefiner,
+    _assess_quality_batch_rust,
 )
 
 
@@ -36,11 +36,11 @@ def benchmark_rust(image_bytes: bytes, num_iterations: int = 100):
         return None
 
     # Warmup
-    _assess_quality_rust(image_bytes)
+    _assess_quality_batch_rust([image_bytes])
 
     start = time.perf_counter()
     for _ in range(num_iterations):
-        _assess_quality_rust(image_bytes)
+        _assess_quality_batch_rust([image_bytes])
     end = time.perf_counter()
 
     total_time = end - start
@@ -56,23 +56,21 @@ def benchmark_rust(image_bytes: bytes, num_iterations: int = 100):
 
 def benchmark_python(image_bytes: bytes, num_iterations: int = 100):
     """Benchmark Python implementation."""
-    import operators.refiners.technical_quality as tq_module
+    import operators.refiners.image_technical_quality as tq_module
 
-    refiner = TechnicalQualityRefiner()
+    refiner = ImageTechnicalQualityRefiner()
 
     # Temporarily disable Rust to force Python
     original_rust_available = tq_module.RUST_BACKEND_AVAILABLE
     tq_module.RUST_BACKEND_AVAILABLE = False
 
     try:
-        record = {"id": "test", "image": {"bytes": image_bytes}}
-
         # Warmup
-        refiner._refine_python(record, "test", image_bytes)
+        refiner._refine_python(image_bytes)
 
         start = time.perf_counter()
         for _ in range(num_iterations):
-            refiner._refine_python(record, "test", image_bytes)
+            refiner._refine_python(image_bytes)
         end = time.perf_counter()
 
         total_time = end - start
@@ -90,15 +88,16 @@ def benchmark_python(image_bytes: bytes, num_iterations: int = 100):
 
 def benchmark_auto(image_bytes: bytes, num_iterations: int = 100):
     """Benchmark auto-detection (uses Rust if available)."""
-    refiner = TechnicalQualityRefiner()
-    record = {"id": "test", "image": {"bytes": image_bytes}}
+    refiner = ImageTechnicalQualityRefiner()
+    records = [{"id": "test", "image": {"bytes": image_bytes}}]
 
     # Warmup
-    refiner.refine(record)
+    refiner.refine_batch(records.copy())
 
     start = time.perf_counter()
     for _ in range(num_iterations):
-        refiner.refine(record)
+        batch = [{"id": "test", "image": {"bytes": image_bytes}}]
+        refiner.refine_batch(batch)
     end = time.perf_counter()
 
     total_time = end - start
@@ -118,7 +117,7 @@ def benchmark_auto(image_bytes: bytes, num_iterations: int = 100):
 def main():
     """Run performance benchmarks."""
     print("=" * 70)
-    print("TechnicalQualityRefiner Performance Benchmark")
+    print("ImageTechnicalQualityRefiner Performance Benchmark")
     print("=" * 70)
     print()
 
@@ -136,7 +135,7 @@ def main():
         ("Very Large", 4000, 4000),
     ]
 
-    num_iterations = 50  # Adjust based on how long you want to wait
+    num_iterations = 50
 
     for test_name, width, height in test_cases:
         print(f"{'=' * 70}")
@@ -176,11 +175,13 @@ def main():
                 print()
 
                 # Compare
-                speedup = python_result['total_time'] / rust_result['total_time']
-                print(f"Performance comparison:")
+                speedup = python_result["total_time"] / rust_result["total_time"]
+                print("Performance comparison:")
                 print(f"  Rust is {speedup:.2f}x faster than Python")
                 print(f"  Time saved: {python_result['total_time'] - rust_result['total_time']:.2f}s")
-                print(f"  Throughput improvement: {rust_result['throughput'] - python_result['throughput']:.2f} images/sec")
+                print(
+                    f"  Throughput improvement: {rust_result['throughput'] - python_result['throughput']:.2f} images/sec"
+                )
         else:
             print("Rust implementation: N/A (not available)")
 

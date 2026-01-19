@@ -20,16 +20,34 @@ import pyarrow as pa
 
 from framework import Refiner
 
+# Field name constants (vd = visual degradations)
+FIELD_COLOR_CAST = "img_vd_color_cast"
+FIELD_BLURRINESS = "img_vd_blurriness"
+FIELD_WATERMARK = "img_vd_watermark"
+FIELD_NOISE = "img_vd_noise"
+FIELD_OVERALL_QUALITY = "img_vd_overall_quality"
 
-class VisualDegradationsRefiner(Refiner):
-    """Refiner for model-based visual degradations assessment.
+# All output fields
+OUTPUT_FIELDS = [
+    FIELD_COLOR_CAST,
+    FIELD_BLURRINESS,
+    FIELD_WATERMARK,
+    FIELD_NOISE,
+    FIELD_OVERALL_QUALITY,
+]
 
-    Uses a multi-head neural network to score images on multiple degradation factors:
-    - color_cast: Color cast/tint level (0-1, higher = more color cast)
-    - blurriness: Blur level (0-1, higher = more blurry)
-    - watermark: Watermark visibility (0-1, higher = more visible)
-    - noise: Noise level (0-1, higher = more noise)
-    - visual_degradations_overall: Overall quality (0-1, higher = better quality)
+
+class ImageVisualDegradationsRefiner(Refiner):
+    """Refiner for model-based image visual degradations assessment.
+
+    Uses a multi-head neural network to score images on multiple degradation factors.
+
+    Output fields (all float32, range 0-1):
+    - vd_color_cast: Color cast/tint level (higher = more color cast)
+    - vd_blurriness: Blur level (higher = more blurry)
+    - vd_watermark: Watermark visibility (higher = more visible)
+    - vd_noise: Noise level (higher = more noise)
+    - vd_overall_quality: Overall quality score (higher = better quality)
     """
 
     def __init__(
@@ -67,7 +85,7 @@ class VisualDegradationsRefiner(Refiner):
             return False
 
         try:
-            from models.quality_assessment.inference import (
+            from models.image_quality_assessment.inference import (
                 MultiHeadQualityInference,
                 get_auto_device,
             )
@@ -83,6 +101,25 @@ class VisualDegradationsRefiner(Refiner):
             print(f"Warning: Failed to load visual degradations model: {e}")
             return False
 
+    def _get_default_result(self) -> dict[str, None]:
+        """Get default result with all fields set to None."""
+        return dict.fromkeys(OUTPUT_FIELDS)
+
+    def _scores_to_dict(self, scores) -> dict[str, float]:
+        """Convert model scores to output dictionary."""
+        return {
+            FIELD_COLOR_CAST: scores.color_cast,
+            FIELD_BLURRINESS: scores.blurriness,
+            FIELD_WATERMARK: scores.watermark,
+            FIELD_NOISE: scores.noise,
+            FIELD_OVERALL_QUALITY: scores.overall,
+        }
+
+    def _set_default_values(self, record: dict[str, Any]) -> None:
+        """Set all output fields to None in the record."""
+        for field in OUTPUT_FIELDS:
+            record[field] = None
+
     def refine(self, record: dict[str, Any]) -> dict[str, Any]:
         """Assess visual degradations using model and return new fields.
 
@@ -92,36 +129,21 @@ class VisualDegradationsRefiner(Refiner):
         Returns:
             Dictionary with degradation scores
         """
-        # Default values if model not available or error occurs
-        default_result = {
-            "color_cast": None,
-            "blurriness": None,
-            "watermark": None,
-            "noise": None,
-            "visual_degradations_overall": None,
-        }
-
         if not self._ensure_model_loaded():
-            return default_result
+            return self._get_default_result()
 
         # Extract image bytes
         img_obj = record.get("image", {})
         if isinstance(img_obj, dict) and "bytes" in img_obj:
             image_bytes = img_obj["bytes"]
         else:
-            return default_result
+            return self._get_default_result()
 
         try:
             scores = self._inference.predict_from_bytes(image_bytes)
-            return {
-                "color_cast": scores.color_cast,
-                "blurriness": scores.blurriness,
-                "watermark": scores.watermark,
-                "noise": scores.noise,
-                "visual_degradations_overall": scores.overall,
-            }
+            return self._scores_to_dict(scores)
         except Exception:
-            return default_result
+            return self._get_default_result()
 
     def refine_batch(self, records: list[dict[str, Any]]) -> None:
         """Refine a batch of records inplace (optimized batch processing).
@@ -133,13 +155,8 @@ class VisualDegradationsRefiner(Refiner):
             return
 
         if not self._ensure_model_loaded():
-            # Set default values
             for record in records:
-                record["color_cast"] = None
-                record["blurriness"] = None
-                record["watermark"] = None
-                record["noise"] = None
-                record["visual_degradations_overall"] = None
+                self._set_default_values(record)
             return
 
         # Collect valid image bytes
@@ -154,11 +171,7 @@ class VisualDegradationsRefiner(Refiner):
 
         # Set defaults for all records first
         for record in records:
-            record["color_cast"] = None
-            record["blurriness"] = None
-            record["watermark"] = None
-            record["noise"] = None
-            record["visual_degradations_overall"] = None
+            self._set_default_values(record)
 
         if not image_bytes_list:
             return
@@ -169,21 +182,11 @@ class VisualDegradationsRefiner(Refiner):
 
             # Update records with predictions
             for idx, scores in zip(valid_indices, scores_list, strict=False):
-                records[idx]["color_cast"] = scores.color_cast
-                records[idx]["blurriness"] = scores.blurriness
-                records[idx]["watermark"] = scores.watermark
-                records[idx]["noise"] = scores.noise
-                records[idx]["visual_degradations_overall"] = scores.overall
+                records[idx].update(self._scores_to_dict(scores))
 
         except Exception as e:
             print(f"Warning: Batch prediction failed: {e}")
 
     def get_output_schema(self) -> dict[str, pa.DataType]:
         """Return output schema for new fields added by this refiner."""
-        return {
-            "color_cast": pa.float32(),
-            "blurriness": pa.float32(),
-            "watermark": pa.float32(),
-            "noise": pa.float32(),
-            "visual_degradations_overall": pa.float32(),
-        }
+        return {field: pa.float32() for field in OUTPUT_FIELDS}
