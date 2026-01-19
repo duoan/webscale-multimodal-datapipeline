@@ -8,6 +8,7 @@ Refiners are automatically registered when this package is imported.
 
 from framework import OperatorRegistry
 
+from .image_aesthetic_quality import ImageAestheticQualityRefiner
 from .image_clip_embedding import ImageClipEmbeddingRefiner
 from .image_metadata import ImageMetadataRefiner
 from .image_technical_quality import ImageTechnicalQualityRefiner
@@ -18,10 +19,12 @@ OperatorRegistry.register("ImageMetadataRefiner", ImageMetadataRefiner)
 OperatorRegistry.register("ImageTechnicalQualityRefiner", ImageTechnicalQualityRefiner)  # Auto-uses Rust if available
 OperatorRegistry.register("ImageVisualDegradationsRefiner", ImageVisualDegradationsRefiner)
 OperatorRegistry.register("ImageClipEmbeddingRefiner", ImageClipEmbeddingRefiner)
+OperatorRegistry.register("ImageAestheticQualityRefiner", ImageAestheticQualityRefiner)
 
 __all__ = [
     "ImageMetadataRefiner",
     "ImageTechnicalQualityRefiner",
     "ImageVisualDegradationsRefiner",
     "ImageClipEmbeddingRefiner",
+    "ImageAestheticQualityRefiner",
 ]

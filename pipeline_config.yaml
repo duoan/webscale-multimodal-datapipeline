@@ -36,34 +36,84 @@ stages:
   #       cpu: 1 # Number of CPUs per worker instance
   #       gpu: 0 # Number of GPUs per worker instance
 
-  - name: embedding_stage
+  # - name: embedding_stage
+  #   operators:
+  #     - name: image_clip_embedding_refiner
+  #       params:
+  #         model_name: "ViT-B-32" # 512-dim embedding
+  #         pretrained: "openai"
+  #         device: "auto"
+  #         normalize: true
+  #         inference_batch_size: 128
+  #         use_fp16: true
+  #         preprocess_workers: 4
+  #       enabled: true
+  #   worker:
+  #     num_replicas: 1 # Single worker for GPU stage (avoid GPU contention)
+  #     resources:
+  #       cpu: 1 # More CPUs for preprocessing threads
+  #       gpu: 0 # Set to 1 if using CUDA GPU
+
+  - name: visual_degradation_scoring_stage
     operators:
-      - name: image_clip_embedding_refiner
+      - name: image_visual_degradations_refiner
         params:
-          model_name: "ViT-B-32" # 512-dim embedding
-          pretrained: "openai"
-          device: "auto"
-          normalize: true
-          inference_batch_size: 128
-          use_fp16: true
-          preprocess_workers: 4
-        enabled: true
+          model_path: models/image_quality_assessment/multihead_quality_model.pth
     worker:
       num_replicas: 1 # Single worker for GPU stage (avoid GPU contention)
       resources:
         cpu: 1 # More CPUs for preprocessing threads
         gpu: 0 # Set to 1 if using CUDA GPU
 
-  - name: visual_degradation_scoring_stage
+  # Aesthetic Quality Scoring Stage (CLIP+MLP aesthetic predictor)
+  # Uses the improved-aesthetic-predictor model from:
+  # https://github.com/christophschuhmann/improved-aesthetic-predictor
+  # Output: image_aesthetic_score (typically 1-10, higher = more visually appealing)
+  #
+  # RECOMMENDED: Use embedding_field to reuse CLIP embeddings from a previous stage.
+  # This avoids redundant CLIP computation. Requires ViT-L-14 embeddings (768-dim).
+  #
+  # Example with pre-computed embeddings (recommended):
+  - name: clip_embedding_stage
     operators:
-      - name: image_visual_degradations_refiner
+      - name: image_clip_embedding_refiner
         params:
-          model_path: models/quality_assessment/multihead_quality_model.pth
+          model_name: "ViT-L-14" # Must be ViT-L-14 for aesthetic predictor
+          pretrained: "openai"
+          inference_batch_size: 32
     worker:
-      num_replicas: 1 # Single worker for GPU stage (avoid GPU contention)
+      num_replicas: 1
       resources:
-        cpu: 1 # More CPUs for preprocessing threads
-        gpu: 0 # Set to 1 if using CUDA GPU
+        cpu: 1
+        gpu: 0
+
+  - name: aesthetic_quality_stage
+    operators:
+      - name: image_aesthetic_quality_refiner
+        params:
+          embedding_field: "image_clip_emb_vit_l_14" # Reuse embeddings from previous stage
+          inference_batch_size: 32
+    worker:
+      num_replicas: 1
+      resources:
+        cpu: 1
+  #
+  # Example standalone (computes CLIP internally, slower):
+  # - name: aesthetic_quality_stage
+  #   operators:
+  #     - name: image_aesthetic_quality_refiner
+  #       params:
+  #         embedding_field: null       # Compute embeddings internally
+  #         clip_model_name: "ViT-L-14"
+  #         clip_pretrained: "openai"
+  #         device: "auto"
+  #         inference_batch_size: 32
+  #         use_fp16: true
+  #   worker:
+  #     num_replicas: 1
+  #     resources:
+  #       cpu: 1
+  #       gpu: 0
 
 data_writer:
   type: ParquetDataWriter
