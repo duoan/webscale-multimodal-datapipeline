@@ -55,13 +55,13 @@ Refiners enrich records with new fields (inplace).
 
 | Operator | Description | Acceleration | Doc |
 |----------|-------------|--------------|-----|
-| `ImageMetadataRefiner` | Extracts width, height, format, file size | CPU | [doc](operators/refiners/image_metadata.md) |
-| `ImageTechnicalQualityRefiner` | Compression artifacts, information entropy | 🦀 Rust | [doc](operators/refiners/image_technical_quality.md) |
-| `ImageVisualDegradationsRefiner` | Color cast, blurriness, watermark, noise | CPU | [doc](operators/refiners/image_visual_degradations.md) |
-| `ImageClipEmbeddingRefiner` | CLIP embeddings via OpenCLIP | 🖥️ GPU | [doc](operators/refiners/image_clip_embedding.md) |
-| `ImageSigLIPEmbeddingRefiner` | SigLIP2 embeddings via HuggingFace | 🖥️ GPU | [doc](operators/refiners/image_siglip_embedding.md) |
-| `ImageAestheticQualityRefiner` | Aesthetic score (requires CLIP emb) | CPU | [doc](operators/refiners/image_aesthetic_quality.md) |
-| `ImageAIGCDetectorRefiner` | AI-generated image detection (requires SigLIP emb) | CPU | [doc](operators/refiners/image_aigc_detector.md) |
+| `ImageMetadataRefiner` | Extracts width, height, format, file size | CPU | [doc](mega_data_factory/operators/refiners/image_metadata.md) |
+| `ImageTechnicalQualityRefiner` | Compression artifacts, information entropy | 🦀 Rust | [doc](mega_data_factory/operators/refiners/image_technical_quality.md) |
+| `ImageVisualDegradationsRefiner` | Color cast, blurriness, watermark, noise | CPU | [doc](mega_data_factory/operators/refiners/image_visual_degradations.md) |
+| `ImageClipEmbeddingRefiner` | CLIP embeddings via OpenCLIP | 🖥️ GPU | [doc](mega_data_factory/operators/refiners/image_clip_embedding.md) |
+| `ImageSigLIPEmbeddingRefiner` | SigLIP2 embeddings via HuggingFace | 🖥️ GPU | [doc](mega_data_factory/operators/refiners/image_siglip_embedding.md) |
+| `ImageAestheticQualityRefiner` | Aesthetic score (requires CLIP emb) | CPU | [doc](mega_data_factory/operators/refiners/image_aesthetic_quality.md) |
+| `ImageAIGCDetectorRefiner` | AI-generated image detection (requires SigLIP emb) | CPU | [doc](mega_data_factory/operators/refiners/image_aigc_detector.md) |
 
 ### Filters
 
@@ -69,7 +69,7 @@ Filters remove records based on conditions.
 
 | Operator | Description | Doc |
 |----------|-------------|-----|
-| `ImageQualityFilter` | Filter by size, quality metrics | [doc](operators/filters/image_quality_filter.md) |
+| `ImageQualityFilter` | Filter by size, quality metrics | [doc](mega_data_factory/operators/filters/image_quality_filter.md) |
 
 ### Deduplicators
 
@@ -77,7 +77,7 @@ Deduplicators remove duplicate records.
 
 | Operator | Description | Acceleration | Doc |
 |----------|-------------|--------------|-----|
-| `ImagePhashDeduplicator` | Perceptual hash deduplication | 🦀 Rust | [doc](operators/dedup/image_phash_dedup.md) |
+| `ImagePhashDeduplicator` | Perceptual hash deduplication | 🦀 Rust | [doc](mega_data_factory/operators/dedup/image_phash_dedup.md) |
 
 ## Architecture
 
