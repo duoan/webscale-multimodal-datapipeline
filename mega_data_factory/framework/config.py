@@ -74,6 +74,16 @@ class RejectedSamplesConfig:
 
 
 @dataclass
+class MetricsConfig:
+    """Configuration for metrics collection and export."""
+
+    enabled: bool = True  # Whether to collect metrics
+    output_path: str = "./metrics"  # Base directory for metrics output
+    collect_custom_metrics: bool = False  # Whether to collect custom metrics from operators
+    write_on_completion: bool = True  # Whether to write metrics to Parquet on run completion
+
+
+@dataclass
 class ExecutorConfig:
     """Configuration for executor."""
 
@@ -85,6 +95,7 @@ class ExecutorConfig:
     num_cpus: int | None = None
     dedup_num_buckets: int = 2  # Number of buckets for distributed deduplication
     rejected_samples: RejectedSamplesConfig = field(default_factory=RejectedSamplesConfig)  # Rejected samples config
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)  # Metrics collection config
 
 
 @dataclass
@@ -145,11 +156,15 @@ class PipelineConfig:
                 )
             )
 
-        # Parse executor config with nested rejected_samples
+        # Parse executor config with nested rejected_samples and metrics
         executor_dict = config_dict.get("executor", {})
         rejected_samples_dict = executor_dict.pop("rejected_samples", {})
         rejected_samples_config = RejectedSamplesConfig(**rejected_samples_dict)
-        executor_config = ExecutorConfig(**executor_dict, rejected_samples=rejected_samples_config)
+        metrics_dict = executor_dict.pop("metrics", {})
+        metrics_config = MetricsConfig(**metrics_dict)
+        executor_config = ExecutorConfig(
+            **executor_dict, rejected_samples=rejected_samples_config, metrics=metrics_config
+        )
 
         return cls(
             data_loader=DataLoaderConfig(**config_dict["data_loader"]),

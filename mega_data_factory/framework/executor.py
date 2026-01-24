@@ -5,12 +5,14 @@ Provides Executor for orchestrating the entire data processing pipeline.
 """
 
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Any
 
 import ray
 
 from .backend import DedupBackend
 from .config import PipelineConfig
+from .metrics import MetricsAggregator, MetricsCollector, MetricsWriter, OperatorMetrics
 from .operator import Deduplicator
 from .registry import DataLoaderRegistry, DataWriterRegistry, OperatorRegistry
 from .worker import RayWorker
@@ -29,6 +31,26 @@ class Executor:
 
         # Check if rejected samples collection is enabled
         self.collect_rejected = config.executor.rejected_samples.enabled
+
+        # Initialize metrics collection
+        self.metrics_enabled = config.executor.metrics.enabled
+        self.metrics_collector: MetricsCollector | None = None
+        self.metrics_writer: MetricsWriter | None = None
+        self.metrics_aggregator: MetricsAggregator | None = None
+
+        if self.metrics_enabled:
+            self.metrics_collector = MetricsCollector()
+            self.metrics_writer = MetricsWriter(config.executor.metrics.output_path)
+            self.metrics_aggregator = MetricsAggregator(self.metrics_collector.run_id)
+
+            # Store config snapshot for metrics
+            config_snapshot = {
+                "max_samples": config.executor.max_samples,
+                "batch_size": config.executor.batch_size,
+                "num_stages": len(config.stages),
+                "stage_names": [s.name for s in config.stages],
+            }
+            self.metrics_collector.set_config(config_snapshot)
 
         # Create data loader
         self.data_loader = DataLoaderRegistry.create(config.data_loader.type, config.data_loader.params)
@@ -279,6 +301,14 @@ class Executor:
         Yields:
             Tuple of (input_count, output_count) per batch
         """
+        # Wrap execution in metrics tracking if enabled
+        if self.metrics_enabled and self.metrics_collector:
+            yield from self._execute_with_metrics()
+        else:
+            yield from self._execute_impl()
+
+    def _execute_impl(self) -> Iterator[tuple]:
+        """Internal implementation of execute without metrics tracking."""
         # Load data
         print("Loading data stream...")
         data_stream = self.data_loader.load()
@@ -346,6 +376,58 @@ class Executor:
         while batch_pipeline:
             for res in self._collect_completed(batch_pipeline, 0):  # 0 means wait for all
                 yield res
+
+    def _execute_with_metrics(self) -> Iterator[tuple]:
+        """Execute pipeline with metrics tracking enabled."""
+        if not self.metrics_collector:
+            yield from self._execute_impl()
+            return
+
+        with self.metrics_collector.track_run():
+            # Execute the pipeline
+            yield from self._execute_impl()
+
+            # Collect metrics from all workers after execution completes
+            print("\nCollecting metrics from workers...")
+            self._collect_metrics_from_workers()
+
+            # Write metrics to Parquet
+            if self.config.executor.metrics.write_on_completion and self.metrics_writer:
+                print("Writing metrics to Parquet...")
+                self._write_metrics()
+                print(f"Metrics written to: {self.metrics_writer.output_path}")
+
+    def _collect_metrics_from_workers(self):
+        """Collect operator metrics from all workers and aggregate to stage metrics."""
+        if not self.metrics_aggregator or not self.metrics_collector:
+            return
+
+        for stage_idx, (worker_group, stage_config) in enumerate(zip(self.stages, self.config.stages, strict=False)):
+            stage_name = stage_config.name
+
+            # Collect metrics from all workers in this stage
+            stage_metrics = self.metrics_aggregator.collect_stage_metrics(worker_group, stage_name)
+
+            # Add operator metrics to collector
+            for op_metrics in stage_metrics.operator_metrics:
+                self.metrics_collector.add_operator_metrics(op_metrics)
+
+    def _write_metrics(self):
+        """Write all collected metrics to Parquet files."""
+        if not self.metrics_writer or not self.metrics_collector:
+            return
+
+        # Get all metrics
+        run_metrics = self.metrics_collector.get_run_metrics()
+        stage_metrics = self.metrics_collector.get_stage_metrics()
+        operator_metrics = self.metrics_collector.get_operator_metrics()
+
+        # Write to Parquet
+        self.metrics_writer.write_all(
+            run_metrics=run_metrics,
+            stage_metrics=stage_metrics,
+            operator_metrics=operator_metrics,
+        )
 
     def get_operator_stats(self) -> dict[str, dict[str, Any]]:
         """Collect performance statistics from all operators across all workers.

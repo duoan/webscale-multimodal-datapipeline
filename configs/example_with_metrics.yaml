@@ -1,0 +1,62 @@
+# Example pipeline configuration with metrics enabled
+
+# Data source
+data_loader:
+  type: HuggingFaceDataLoader
+  params:
+    dataset_name: "jp1924/Laion400m-1"
+    split: "train"
+    streaming: true
+
+# Processing stages
+stages:
+  # Stage 1: Basic metadata and quality (CPU, Rust-accelerated)
+  - name: basic_stage
+    operators:
+      - name: image_metadata_refiner
+      - name: image_technical_quality_refiner  # Rust-accelerated
+      - name: image_quality_filter
+        params:
+          min_width: 128
+          min_height: 128
+          max_compression_artifacts: 0.8
+          min_information_entropy: 0.0
+    worker:
+      num_replicas: 2
+      resources:
+        cpu: 1
+
+  # Stage 2: Embedding extraction (GPU)
+  - name: embedding_stage
+    operators:
+      - name: image_clip_embedding_refiner
+        params:
+          model_name: "ViT-L-14"
+          pretrained: "openai"
+          device: "auto"
+          inference_batch_size: 32
+          use_fp16: true
+    worker:
+      num_replicas: 1
+      resources:
+        cpu: 2
+
+# Output
+data_writer:
+  type: ParquetDataWriter
+  params:
+    output_path: "./parquet_data"
+    table_name: "image_profiles"
+
+# Execution settings
+executor:
+  max_samples: 1000
+  batch_size: 200
+  dedup_num_buckets: 2
+
+  # Metrics configuration
+  metrics:
+    enabled: true
+    output_path: "./metrics"
+    collect_custom_metrics: false
+    write_on_completion: true
