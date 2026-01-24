@@ -387,14 +387,16 @@ class Executor:
             yield from self._execute_impl()
 
             # Collect metrics from all workers after execution completes
+            # (must be before track_run() exits so stage metrics are available for run metrics calculation)
             print("\nCollecting metrics from workers...")
             self._collect_metrics_from_workers()
 
-            # Write metrics to Parquet
-            if self.config.executor.metrics.write_on_completion and self.metrics_writer:
-                print("Writing metrics to Parquet...")
-                self._write_metrics()
-                print(f"Metrics written to: {self.metrics_writer.output_path}")
+        # Write metrics to Parquet
+        # (must be after track_run() exits so run metrics are calculated in finally block)
+        if self.config.executor.metrics.write_on_completion and self.metrics_writer:
+            print("Writing metrics to Parquet...")
+            self._write_metrics()
+            print(f"Metrics written to: {self.metrics_writer.output_path}")
 
     def _collect_metrics_from_workers(self):
         """Collect operator metrics from all workers and aggregate to stage metrics."""
