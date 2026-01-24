@@ -273,6 +273,16 @@ class MetricsCollector:
         """
         self._operator_metrics.append(metrics)
 
+    def add_stage_metrics(self, metrics: StageMetrics):
+        """Add pre-computed stage metrics.
+
+        Used when integrating with aggregated stage metrics from workers.
+
+        Args:
+            metrics: Stage metrics to add
+        """
+        self._stage_metrics.append(metrics)
+
     def get_operator_metrics(self) -> list[OperatorMetrics]:
         """Get all collected operator metrics."""
         return list(self._operator_metrics)

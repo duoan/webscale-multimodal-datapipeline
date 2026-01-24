@@ -407,6 +407,9 @@ class Executor:
             # Collect metrics from all workers in this stage
             stage_metrics = self.metrics_aggregator.collect_stage_metrics(worker_group, stage_name)
 
+            # Add stage metrics to collector
+            self.metrics_collector.add_stage_metrics(stage_metrics)
+
             # Add operator metrics to collector
             for op_metrics in stage_metrics.operator_metrics:
                 self.metrics_collector.add_operator_metrics(op_metrics)
