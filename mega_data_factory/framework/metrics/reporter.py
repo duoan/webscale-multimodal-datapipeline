@@ -11,8 +11,10 @@ From a senior data analyst perspective, each run report should include:
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
+from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 
 class MetricsReporter:
@@ -29,6 +31,47 @@ class MetricsReporter:
         self.stages_path = self.metrics_path / "stages"
         self.operators_path = self.metrics_path / "operators"
 
+        # Setup Jinja2 template environment
+        template_dir = Path(__file__).parent / "templates"
+        self.jinja_env = Environment(
+            loader=FileSystemLoader(template_dir),
+            autoescape=select_autoescape(["html", "xml"]),
+            trim_blocks=True,
+            lstrip_blocks=True,
+        )
+
+        # Register custom filters
+        self.jinja_env.filters["format_metric"] = self._format_metric_value
+
+    @staticmethod
+    def _format_metric_value(value: float | int, format_type: str, precision: int) -> str:
+        """Format metric value according to type and precision.
+
+        Args:
+            value: The numeric value to format
+            format_type: Type of formatting (percent, time, latency, number, integer)
+            precision: Number of decimal places
+
+        Returns:
+            Formatted string
+        """
+        if pd.isna(value):
+            return "N/A"
+
+        if format_type == "percent":
+            return f"{value:.{precision}f}%"
+        elif format_type == "time":
+            return f"{value:.{precision}f}s"
+        elif format_type == "latency":
+            # Convert seconds to milliseconds
+            return f"{value * 1000:.{precision}f}ms"
+        elif format_type == "number":
+            return f"{value:,.{precision}f}"
+        elif format_type == "integer":
+            return f"{int(value):,}"
+        else:
+            return str(value)
+
     def load_single_run_metrics(self, run_id: str) -> tuple[pd.Series | None, pd.DataFrame | None, pd.DataFrame | None]:
         """Load metrics for a specific run.
 
@@ -40,21 +83,21 @@ class MetricsReporter:
         """
         # Load run metrics
         run_series = None
-        run_file = self.runs_path / f"run_{run_id}.parquet"
+        run_file = self.runs_path / f"{run_id}.parquet"
         if run_file.exists():
             run_df = pd.read_parquet(run_file)
             run_series = run_df.iloc[0] if len(run_df) > 0 else None
 
         # Load stage metrics for this run
         stage_df = None
-        stage_files = list(self.stages_path.glob(f"stages_run_{run_id}_*.parquet"))
+        stage_files = list(self.stages_path.glob(f"stages_{run_id}*.parquet"))
         if stage_files:
             stage_df = pd.concat([pd.read_parquet(f) for f in stage_files], ignore_index=True)
             stage_df = stage_df[stage_df["run_id"] == run_id].copy()
 
         # Load operator metrics for this run
         operator_df = None
-        operator_files = list(self.operators_path.glob(f"operators_run_{run_id}_*.parquet"))
+        operator_files = list(self.operators_path.glob(f"operators_{run_id}*.parquet"))
         if operator_files:
             operator_df = pd.concat([pd.read_parquet(f) for f in operator_files], ignore_index=True)
             operator_df = operator_df[operator_df["run_id"] == run_id].copy()
@@ -76,8 +119,8 @@ class MetricsReporter:
 
         # Sort by modification time, get latest
         latest_file = max(run_files, key=lambda f: f.stat().st_mtime)
-        # Extract run_id from filename: run_{run_id}.parquet
-        run_id = latest_file.stem.replace("run_", "")
+        # Extract run_id from filename: {run_id}.parquet (run_id already contains "run_" prefix)
+        run_id = latest_file.stem
         return run_id
 
     def generate_single_run_report(
@@ -127,234 +170,388 @@ class MetricsReporter:
         stage_df: pd.DataFrame | None,
         operator_df: pd.DataFrame | None,
     ) -> str:
-        """Generate HTML for single run analysis."""
+        """Generate HTML for single run analysis using Jinja2 template."""
         try:
             import plotly.graph_objects as go  # noqa: F401
             from plotly.subplots import make_subplots  # noqa: F401
         except ImportError:
             return self._generate_simple_html(run_id, run_series, stage_df, operator_df)
 
-        sections = []
+        # Prepare charts list
+        charts = []
 
-        # 1. Executive Summary
-        sections.append(self._generate_executive_summary(run_series))
-
-        # 2. Data Quality Funnel (漏斗图)
+        # 2. Data Quality Funnel
         if stage_df is not None and len(stage_df) > 0:
-            sections.append(self._generate_data_funnel(stage_df))
+            charts.append(
+                {
+                    "title": "🔻 Data Quality Funnel",
+                    "description": "Visualize data filtering and pass rates at stage and operator levels",
+                    "html": self._generate_data_funnel(stage_df, operator_df),
+                    "alert": None,
+                }
+            )
 
-        # 3. Data Flow Sankey Diagram (桑基图)
+        # 3. Data Flow Sankey Diagram
         if stage_df is not None and len(stage_df) > 0:
-            sections.append(self._generate_sankey_diagram(stage_df, operator_df))
+            charts.append(
+                {
+                    "title": "🌊 Data Flow Sankey",
+                    "description": "Serial data flow through operators within each stage",
+                    "html": self._generate_sankey_diagram(stage_df, operator_df),
+                    "alert": None,
+                }
+            )
 
-        # 4. Performance Timeline (时间线)
+        # 4. Performance Timeline
         if stage_df is not None and len(stage_df) > 0:
-            sections.append(self._generate_timeline_chart(stage_df))
+            charts.append(
+                {
+                    "title": "⏱️ Performance Timeline",
+                    "description": "Stage execution timeline showing duration of each stage",
+                    "html": self._generate_timeline_chart(stage_df),
+                    "alert": None,
+                }
+            )
 
-        # 5. Bottleneck Analysis (瓶颈分析)
+        # 5. Bottleneck Analysis
         if stage_df is not None and operator_df is not None and len(operator_df) > 0:
-            sections.append(self._generate_bottleneck_analysis(stage_df, operator_df))
+            # Calculate bottleneck data
+            slowest_stage = stage_df.loc[stage_df["total_time"].idxmax()]
+            slowest_operator = operator_df.loc[operator_df["throughput"].idxmin()]
 
-        # 6. Latency Distribution Heatmap (热力图)
+            charts.append(
+                {
+                    "title": "🔍 Bottleneck Analysis",
+                    "description": "Identify performance bottlenecks in stages and operators",
+                    "html": self._generate_bottleneck_chart(stage_df, operator_df),
+                    "alert": {
+                        "slowest_stage_name": slowest_stage["stage_name"],
+                        "slowest_stage_time": slowest_stage["total_time"],
+                        "slowest_stage_throughput": slowest_stage["avg_throughput"],
+                        "slowest_operator_name": slowest_operator["operator_name"],
+                        "slowest_operator_throughput": slowest_operator["throughput"],
+                        "slowest_operator_latency": slowest_operator["avg_latency"],
+                    },
+                }
+            )
+
+        # 6. Latency Distribution Heatmap
         if operator_df is not None and len(operator_df) > 0:
-            sections.append(self._generate_latency_heatmap(operator_df))
+            charts.append(
+                {
+                    "title": "🌡️ Latency Heatmap",
+                    "description": "Latency percentile distribution across operators",
+                    "html": self._generate_latency_heatmap(operator_df),
+                    "alert": None,
+                }
+            )
 
-        # 7. Throughput vs Latency Scatter (气泡图)
+        # 7. Throughput vs Latency Scatter
         if operator_df is not None and len(operator_df) > 0:
-            sections.append(self._generate_throughput_latency_scatter(operator_df))
+            charts.append(
+                {
+                    "title": "💡 Throughput vs Latency Analysis",
+                    "description": "Performance scatter plot with bubble size representing workload",
+                    "html": self._generate_throughput_latency_scatter(operator_df),
+                    "alert": None,
+                }
+            )
 
-        # 8. Stage Duration Waterfall (瀑布图)
+        # 8. Stage Duration Waterfall
         if stage_df is not None and len(stage_df) > 0:
-            sections.append(self._generate_duration_waterfall(stage_df))
+            charts.append(
+                {
+                    "title": "📊 Duration Waterfall",
+                    "description": "Cumulative stage duration breakdown",
+                    "html": self._generate_duration_waterfall(stage_df),
+                    "alert": None,
+                }
+            )
 
         # 9. Detailed Metrics Tables
-        sections.append(self._generate_detailed_tables(stage_df, operator_df))
+        tables = self._generate_detailed_tables(stage_df, operator_df)
 
-        # Combine into full HTML
-        return self._wrap_html(run_id, run_series, sections)
+        # Render template
+        template = self.jinja_env.get_template("report.html.jinja2")
+        return template.render(
+            run_id=run_id,
+            timestamp=datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC"),
+            run_metrics=run_series,
+            charts=charts,
+            tables=tables,
+        )
 
-    def _generate_executive_summary(self, run_series: pd.Series) -> str:
-        """Generate executive summary with KPIs."""
-        duration_str = f"{run_series['duration']:.2f}s"
-        pass_rate = run_series['overall_pass_rate']
-        pass_rate_color = "#27ae60" if pass_rate >= 80 else "#e67e22" if pass_rate >= 50 else "#e74c3c"
-
-        return f"""
-        <div class="section">
-            <h2>📊 Executive Summary</h2>
-            <div class="kpi-grid">
-                <div class="kpi-card">
-                    <div class="kpi-label">Total Input</div>
-                    <div class="kpi-value">{int(run_series['total_input_records']):,}</div>
-                    <div class="kpi-unit">records</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Total Output</div>
-                    <div class="kpi-value">{int(run_series['total_output_records']):,}</div>
-                    <div class="kpi-unit">records</div>
-                </div>
-                <div class="kpi-card" style="background: {pass_rate_color}; color: white;">
-                    <div class="kpi-label" style="color: rgba(255,255,255,0.9);">Overall Pass Rate</div>
-                    <div class="kpi-value">{pass_rate:.1f}%</div>
-                    <div class="kpi-unit" style="color: rgba(255,255,255,0.9);">quality score</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Duration</div>
-                    <div class="kpi-value">{duration_str}</div>
-                    <div class="kpi-unit">execution time</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Throughput</div>
-                    <div class="kpi-value">{run_series['avg_throughput']:.1f}</div>
-                    <div class="kpi-unit">records/s</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Stages</div>
-                    <div class="kpi-value">{int(run_series['num_stages'])}</div>
-                    <div class="kpi-unit">pipeline stages</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Data Loss</div>
-                    <div class="kpi-value">{int(run_series['total_input_records'] - run_series['total_output_records']):,}</div>
-                    <div class="kpi-unit">records filtered</div>
-                </div>
-                <div class="kpi-card">
-                    <div class="kpi-label">Errors</div>
-                    <div class="kpi-value">{int(run_series['total_errors'])}</div>
-                    <div class="kpi-unit">error count</div>
-                </div>
-            </div>
-        </div>
-        """
-
-    def _generate_data_funnel(self, stage_df: pd.DataFrame) -> str:
-        """Generate data quality funnel chart showing data loss at each stage."""
+    def _generate_data_funnel(self, stage_df: pd.DataFrame, operator_df: pd.DataFrame | None) -> str:
+        """Generate data quality funnel charts showing data loss at stage and operator levels."""
         import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
 
         # Sort stages by order
         stage_df = stage_df.sort_values("stage_name")
 
-        # Create funnel data
+        # Create subplot with 2 rows, 1 column (stacked vertically)
+        fig = make_subplots(
+            rows=2,
+            cols=1,
+            subplot_titles=("Stage-Level Funnel", "Operator-Level Funnel"),
+            specs=[[{"type": "funnel"}], [{"type": "funnel"}]],
+            vertical_spacing=0.15,
+        )
+
+        # ===== Top: Stage-level funnel =====
         stages = stage_df["stage_name"].tolist()
-        input_records = stage_df["input_records"].tolist()
-        output_records = stage_df["output_records"].tolist()
+        stage_input = stage_df["input_records"].tolist()
+        stage_output = stage_df["output_records"].tolist()
 
-        # Funnel chart shows how data flows through stages
-        fig = go.Figure()
-
-        # Input funnel
+        # Input funnel for stages
         fig.add_trace(
             go.Funnel(
-                name="Input",
+                name="Stage Input",
                 y=stages,
-                x=input_records,
+                x=stage_input,
                 textinfo="value+percent initial",
                 marker={"color": "#3498db"},
-            )
+                showlegend=True,
+            ),
+            row=1,
+            col=1,
         )
 
-        # Output funnel
+        # Output funnel for stages
         fig.add_trace(
             go.Funnel(
-                name="Output",
+                name="Stage Output",
                 y=stages,
-                x=output_records,
+                x=stage_output,
                 textinfo="value+percent previous",
                 marker={"color": "#2ecc71"},
-            )
+                showlegend=True,
+            ),
+            row=1,
+            col=1,
         )
+
+        # ===== Bottom: Operator-level funnel =====
+        if operator_df is not None and len(operator_df) > 0:
+            # Aggregate operators by stage and operator_name, preserve execution order
+            op_agg = (
+                operator_df.groupby(["stage_name", "operator_name"])
+                .agg(
+                    {
+                        "input_records": "sum",
+                        "output_records": "sum",
+                        "pass_rate": "mean",
+                        "timestamp": "min",  # Preserve execution order
+                    }
+                )
+                .reset_index()
+                .sort_values(["stage_name", "timestamp"])
+            )
+
+            # Format labels and collect data
+            operators = []
+            op_input = []
+            op_output = []
+
+            for _, row in op_agg.iterrows():
+                # Format: "stage: operator"
+                label = f"{row['stage_name']}: {row['operator_name']}"
+                operators.append(label)
+                op_input.append(row["input_records"])
+                op_output.append(row["output_records"])
+
+            # Input funnel for operators
+            fig.add_trace(
+                go.Funnel(
+                    name="Operator Input",
+                    y=operators,
+                    x=op_input,
+                    textinfo="value+percent initial",
+                    marker={"color": "#e74c3c"},
+                    showlegend=True,
+                ),
+                row=2,
+                col=1,
+            )
+
+            # Output funnel for operators
+            fig.add_trace(
+                go.Funnel(
+                    name="Operator Output",
+                    y=operators,
+                    x=op_output,
+                    textinfo="value+percent previous",
+                    marker={"color": "#f39c12"},
+                    showlegend=True,
+                ),
+                row=2,
+                col=1,
+            )
 
         fig.update_layout(
-            title="Data Flow Funnel - Record Counts Through Pipeline",
-            height=400,
+            title_text="Data Quality Funnel - Stage & Operator Level Analysis",
+            height=800,  # Increased height for vertical layout
             template="plotly_white",
+            showlegend=True,
         )
 
-        return f'<div class="section"><h2>🔻 Data Quality Funnel</h2><div id="funnel-chart"></div></div>\n<script>Plotly.newPlot("funnel-chart", {fig.to_json()});</script>'
+        chart_html = fig.to_html(include_plotlyjs=False, div_id="funnel-chart", config={"responsive": True})
+        return chart_html
 
     def _generate_sankey_diagram(self, stage_df: pd.DataFrame, operator_df: pd.DataFrame | None) -> str:
-        """Generate Sankey diagram showing data flow between stages and operators."""
+        """Generate Sankey diagram: Input splits into multiple filters per stage, then continues."""
         import plotly.graph_objects as go
 
-        # Sort stages
-        stage_df = stage_df.sort_values("stage_name")
+        if operator_df is None or len(operator_df) == 0:
+            return "<p>No operator data available</p>"
 
-        # Build nodes
-        nodes = ["INPUT"]  # Start node
-        node_idx = {"INPUT": 0}
+        # Aggregate operators by stage and operator_name (sum across workers)
+        op_agg = (
+            operator_df.groupby(["stage_name", "operator_name"])
+            .agg(
+                {
+                    "input_records": "sum",
+                    "output_records": "sum",
+                    "pass_rate": "mean",
+                    "timestamp": "min",
+                }
+            )
+            .reset_index()
+            .sort_values(["stage_name", "timestamp"])
+        )
 
-        # Add stage nodes
-        for stage in stage_df["stage_name"]:
-            nodes.append(stage)
-            node_idx[stage] = len(nodes) - 1
+        # Calculate x positions for stages
+        num_stages = len(stage_df)
+        x_step = 0.8 / (num_stages + 1)
 
-        nodes.append("OUTPUT")  # End node
-        node_idx["OUTPUT"] = len(nodes) - 1
+        # Build nodes with explicit positions
+        node_labels = []
+        node_colors = []
+        node_x = []
+        node_y = []
+
+        # Node: Input
+        node_labels.append("Input")
+        node_colors.append("#3498db")
+        node_x.append(0.05)
+        node_y.append(0.5)
+        input_idx = 0
+
+        # For each stage: create filter nodes for each operator that filters
+        stage_node_map = {}  # Maps stage_name to the retained/output node index
+        filter_node_indices = {}  # Maps (stage_name, operator_name) to filter node index
+
+        for stage_idx, (_, stage_row) in enumerate(stage_df.iterrows()):
+            stage_name = stage_row["stage_name"]
+            stage_x = 0.1 + (stage_idx + 1) * x_step
+
+            # Get operators in this stage
+            stage_ops = op_agg[op_agg["stage_name"] == stage_name]
+
+            # Create filter nodes for each operator that filters data
+            y_offset = 0.2
+            for _, op_row in stage_ops.iterrows():
+                filtered = op_row["input_records"] - op_row["output_records"]
+                if filtered > 0:
+                    filter_idx = len(node_labels)
+                    filter_node_indices[(stage_name, op_row["operator_name"])] = filter_idx
+                    node_labels.append(f"{op_row['operator_name']}\nFiltered")
+                    node_colors.append("#95a5a6")
+                    node_x.append(stage_x)
+                    node_y.append(y_offset)
+                    y_offset += 0.15
+
+            # Create stage output node (retained data after all filters)
+            stage_output_idx = len(node_labels)
+            stage_node_map[stage_name] = stage_output_idx
+            node_labels.append(f"{stage_name}\nOutput")
+            node_colors.append("#667eea")
+            node_x.append(stage_x)
+            node_y.append(0.75)  # Bottom position
+
+        # Node: Final Output
+        output_idx = len(node_labels)
+        node_labels.append("Output")
+        node_colors.append("#27ae60")
+        node_x.append(0.95)
+        node_y.append(0.5)
 
         # Build links
-        source = []
-        target = []
-        value = []
-        colors = []
+        sources = []
+        targets = []
+        values = []
+        link_colors = []
 
-        # INPUT -> first stage
-        first_stage = stage_df.iloc[0]
-        source.append(node_idx["INPUT"])
-        target.append(node_idx[first_stage["stage_name"]])
-        value.append(first_stage["input_records"])
-        colors.append("rgba(52, 152, 219, 0.4)")
+        # Process each stage
+        prev_source_idx = input_idx
+        prev_source_value = stage_df.iloc[0]["input_records"]
 
-        # Stage to stage
-        for i in range(len(stage_df) - 1):
-            curr_stage = stage_df.iloc[i]
-            next_stage = stage_df.iloc[i + 1]
-            source.append(node_idx[curr_stage["stage_name"]])
-            target.append(node_idx[next_stage["stage_name"]])
-            value.append(curr_stage["output_records"])
-            # Color based on pass rate
-            pass_rate = curr_stage["pass_rate"]
-            if pass_rate >= 80:
-                colors.append("rgba(46, 204, 113, 0.4)")  # Green
-            elif pass_rate >= 50:
-                colors.append("rgba(230, 126, 34, 0.4)")  # Orange
-            else:
-                colors.append("rgba(231, 76, 60, 0.4)")  # Red
+        for stage_idx, (_, stage_row) in enumerate(stage_df.iterrows()):
+            stage_name = stage_row["stage_name"]
+            stage_output_idx = stage_node_map[stage_name]
 
-        # Last stage -> OUTPUT
-        last_stage = stage_df.iloc[-1]
-        source.append(node_idx[last_stage["stage_name"]])
-        target.append(node_idx["OUTPUT"])
-        value.append(last_stage["output_records"])
-        colors.append("rgba(46, 204, 113, 0.4)")
+            # Get operators in this stage
+            stage_ops = op_agg[op_agg["stage_name"] == stage_name]
 
+            # Links from previous source to all filter nodes in this stage
+            for _, op_row in stage_ops.iterrows():
+                filtered = op_row["input_records"] - op_row["output_records"]
+                if filtered > 0:
+                    filter_idx = filter_node_indices[(stage_name, op_row["operator_name"])]
+                    sources.append(prev_source_idx)
+                    targets.append(filter_idx)
+                    values.append(filtered)
+                    link_colors.append("rgba(231, 76, 60, 0.4)")  # Red for filtered
+
+            # Link from previous source to stage output (retained data)
+            sources.append(prev_source_idx)
+            targets.append(stage_output_idx)
+            values.append(stage_row["output_records"])
+            link_colors.append("rgba(39, 174, 96, 0.5)")  # Green for retained
+
+            # Update previous source for next stage
+            prev_source_idx = stage_output_idx
+            prev_source_value = stage_row["output_records"]
+
+        # Final link: last stage output → Final Output
+        sources.append(prev_source_idx)
+        targets.append(output_idx)
+        values.append(prev_source_value)
+        link_colors.append("rgba(39, 174, 96, 0.6)")
+
+        # Create Sankey diagram
         fig = go.Figure(
             data=[
                 go.Sankey(
-                    node={
-                        "pad": 15,
-                        "thickness": 20,
-                        "line": {"color": "black", "width": 0.5},
-                        "label": nodes,
-                        "color": "#3498db",
-                    },
-                    link={
-                        "source": source,
-                        "target": target,
-                        "value": value,
-                        "color": colors,
-                    },
+                    arrangement="snap",
+                    node=dict(
+                        pad=15,
+                        thickness=20,
+                        line=dict(color="white", width=2),
+                        label=node_labels,
+                        color=node_colors,
+                        x=node_x,
+                        y=node_y,
+                    ),
+                    link=dict(
+                        source=sources,
+                        target=targets,
+                        value=values,
+                        color=link_colors,
+                    ),
                 )
             ]
         )
 
         fig.update_layout(
-            title="Data Flow Sankey Diagram - Record Movement",
-            font_size=12,
-            height=500,
+            title="Data Flow Sankey Diagram - Stage Level with Filters",
+            font=dict(size=10),
+            height=700,
             template="plotly_white",
         )
 
-        return f'<div class="section"><h2>🌊 Data Flow Sankey</h2><div id="sankey-chart"></div></div>\n<script>Plotly.newPlot("sankey-chart", {fig.to_json()});</script>'
+        chart_html = fig.to_html(include_plotlyjs=False, div_id="dataflow-chart", config={"responsive": True})
+        return chart_html
 
     def _generate_timeline_chart(self, stage_df: pd.DataFrame) -> str:
         """Generate timeline chart showing stage execution durations."""
@@ -365,7 +562,7 @@ class MetricsReporter:
         # Calculate start times (cumulative)
         start_times = [0]
         for i in range(len(stage_df) - 1):
-            start_times.append(start_times[-1] + stage_df.iloc[i]["duration"])
+            start_times.append(start_times[-1] + stage_df.iloc[i]["total_time"])
 
         fig = go.Figure()
 
@@ -373,13 +570,13 @@ class MetricsReporter:
             fig.add_trace(
                 go.Bar(
                     name=row["stage_name"],
-                    x=[row["duration"]],
+                    x=[row["total_time"]],
                     y=[row["stage_name"]],
                     orientation="h",
                     marker={
                         "color": f"rgba({50 + i * 40}, {100 + i * 30}, {200 - i * 20}, 0.8)",
                     },
-                    text=[f"{row['duration']:.2f}s"],
+                    text=[f"{row['total_time']:.2f}s"],
                     textposition="inside",
                 )
             )
@@ -394,21 +591,24 @@ class MetricsReporter:
             showlegend=False,
         )
 
-        return f'<div class="section"><h2>⏱️ Performance Timeline</h2><div id="timeline-chart"></div></div>\n<script>Plotly.newPlot("timeline-chart", {fig.to_json()});</script>'
+        chart_html = fig.to_html(include_plotlyjs=False, div_id="timeline-chart", config={"responsive": True})
+        return chart_html
 
-    def _generate_bottleneck_analysis(self, stage_df: pd.DataFrame, operator_df: pd.DataFrame) -> str:
-        """Analyze and visualize performance bottlenecks."""
+    def _generate_bottleneck_chart(self, stage_df: pd.DataFrame, operator_df: pd.DataFrame) -> str:
+        """Generate bottleneck analysis chart."""
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
 
         # Find slowest stage
-        slowest_stage = stage_df.loc[stage_df["duration"].idxmax()]
+        slowest_stage = stage_df.loc[stage_df["total_time"].idxmax()]
 
         # Find operator with lowest throughput
         slowest_operator = operator_df.loc[operator_df["throughput"].idxmin()]
 
         # Find operators with highest latency
-        operator_summary = operator_df.groupby("operator_name").agg({"avg_latency": "mean", "throughput": "mean"}).reset_index()
+        operator_summary = (
+            operator_df.groupby("operator_name").agg({"avg_latency": "mean", "throughput": "mean"}).reset_index()
+        )
 
         fig = make_subplots(
             rows=1,
@@ -421,10 +621,12 @@ class MetricsReporter:
         fig.add_trace(
             go.Bar(
                 x=stage_df["stage_name"],
-                y=stage_df["duration"],
+                y=stage_df["total_time"],
                 name="Duration",
-                marker_color=["#e74c3c" if name == slowest_stage["stage_name"] else "#3498db" for name in stage_df["stage_name"]],
-                text=[f"{d:.2f}s" for d in stage_df["duration"]],
+                marker_color=[
+                    "#e74c3c" if name == slowest_stage["stage_name"] else "#3498db" for name in stage_df["stage_name"]
+                ],
+                text=[f"{d:.2f}s" for d in stage_df["total_time"]],
                 textposition="outside",
             ),
             row=1,
@@ -437,7 +639,10 @@ class MetricsReporter:
                 x=operator_summary["operator_name"],
                 y=operator_summary["throughput"],
                 name="Throughput",
-                marker_color=["#e74c3c" if name == slowest_operator["operator_name"] else "#2ecc71" for name in operator_summary["operator_name"]],
+                marker_color=[
+                    "#e74c3c" if name == slowest_operator["operator_name"] else "#2ecc71"
+                    for name in operator_summary["operator_name"]
+                ],
                 text=[f"{t:.1f}" for t in operator_summary["throughput"]],
                 textposition="outside",
             ),
@@ -452,15 +657,7 @@ class MetricsReporter:
 
         fig.update_layout(height=500, template="plotly_white", showlegend=False)
 
-        bottleneck_info = f"""
-        <div class="alert alert-warning">
-            <strong>⚠️ Bottleneck Detected:</strong><br>
-            Slowest Stage: <strong>{slowest_stage['stage_name']}</strong> ({slowest_stage['duration']:.2f}s, {slowest_stage['avg_throughput']:.1f} rec/s)<br>
-            Slowest Operator: <strong>{slowest_operator['operator_name']}</strong> ({slowest_operator['throughput']:.1f} rec/s, {slowest_operator['avg_latency']:.3f}s latency)
-        </div>
-        """
-
-        return f'<div class="section"><h2>🔍 Bottleneck Analysis</h2>{bottleneck_info}<div id="bottleneck-chart"></div></div>\n<script>Plotly.newPlot("bottleneck-chart", {fig.to_json()});</script>'
+        return fig.to_html(include_plotlyjs=False, div_id="bottleneck-chart", config={"responsive": True})
 
     def _generate_latency_heatmap(self, operator_df: pd.DataFrame) -> str:
         """Generate heatmap of latency percentiles."""
@@ -472,13 +669,15 @@ class MetricsReporter:
         data_matrix = []
         for op in operators:
             op_data = operator_df[operator_df["operator_name"] == op].iloc[0]
-            data_matrix.append([
-                op_data["min_latency"],
-                op_data["p50_latency"],
-                op_data["p95_latency"],
-                op_data["p99_latency"],
-                op_data["max_latency"],
-            ])
+            data_matrix.append(
+                [
+                    op_data["min_latency"],
+                    op_data["p50_latency"],
+                    op_data["p95_latency"],
+                    op_data["p99_latency"],
+                    op_data["max_latency"],
+                ]
+            )
 
         fig = go.Figure(
             data=go.Heatmap(
@@ -501,7 +700,8 @@ class MetricsReporter:
             template="plotly_white",
         )
 
-        return f'<div class="section"><h2>🌡️ Latency Heatmap</h2><div id="heatmap-chart"></div></div>\n<script>Plotly.newPlot("heatmap-chart", {fig.to_json()});</script>'
+        chart_html = fig.to_html(include_plotlyjs=False, div_id="heatmap-chart", config={"responsive": True})
+        return chart_html
 
     def _generate_throughput_latency_scatter(self, operator_df: pd.DataFrame) -> str:
         """Generate scatter plot of throughput vs latency with bubble size = input_records."""
@@ -513,9 +713,12 @@ class MetricsReporter:
             .reset_index()
         )
 
+        # Convert latency from seconds to milliseconds for better readability
+        operator_summary["avg_latency_ms"] = operator_summary["avg_latency"] * 1000
+
         fig = go.Figure(
             data=go.Scatter(
-                x=operator_summary["avg_latency"],
+                x=operator_summary["avg_latency_ms"],
                 y=operator_summary["throughput"],
                 mode="markers+text",
                 marker={
@@ -529,18 +732,22 @@ class MetricsReporter:
                 text=operator_summary["operator_name"],
                 textposition="top center",
                 textfont={"size": 10},
+                hovertemplate="<b>%{text}</b><br>Latency: %{x:.3f} ms<br>Throughput: %{y:,.0f} rec/s<extra></extra>",
             )
         )
 
         fig.update_layout(
             title="Throughput vs Latency Scatter (bubble size = input records, color = errors)",
-            xaxis_title="Average Latency (seconds)",
+            xaxis_title="Average Latency (ms)",
             yaxis_title="Throughput (records/s)",
+            xaxis_type="log",
+            yaxis_type="log",
             height=500,
             template="plotly_white",
         )
 
-        return f'<div class="section"><h2>💡 Throughput vs Latency Analysis</h2><div id="scatter-chart"></div></div>\n<script>Plotly.newPlot("scatter-chart", {fig.to_json()});</script>'
+        chart_html = fig.to_html(include_plotlyjs=False, div_id="scatter-chart", config={"responsive": True})
+        return chart_html
 
     def _generate_duration_waterfall(self, stage_df: pd.DataFrame) -> str:
         """Generate waterfall chart showing cumulative stage durations."""
@@ -550,7 +757,7 @@ class MetricsReporter:
 
         # Waterfall data
         x = list(stage_df["stage_name"]) + ["Total"]
-        y = list(stage_df["duration"]) + [stage_df["duration"].sum()]
+        y = list(stage_df["total_time"]) + [stage_df["total_time"].sum()]
 
         # Build measure list
         measure = ["relative"] * len(stage_df) + ["total"]
@@ -574,162 +781,138 @@ class MetricsReporter:
             template="plotly_white",
         )
 
-        return f'<div class="section"><h2>📊 Duration Waterfall</h2><div id="waterfall-chart"></div></div>\n<script>Plotly.newPlot("waterfall-chart", {fig.to_json()});</script>'
+        chart_html = fig.to_html(include_plotlyjs=False, div_id="waterfall-chart", config={"responsive": True})
+        return chart_html
 
-    def _generate_detailed_tables(self, stage_df: pd.DataFrame | None, operator_df: pd.DataFrame | None) -> str:
-        """Generate detailed data tables."""
-        html = '<div class="section"><h2>📋 Detailed Metrics</h2>'
+    def _generate_detailed_tables(
+        self, stage_df: pd.DataFrame | None, operator_df: pd.DataFrame | None
+    ) -> list[dict[str, str | list[str] | list[dict[str, Any]]]]:
+        """Generate detailed data tables as structured data.
+
+        Returns:
+            List of table dictionaries with title, columns, rows, and column format specs
+        """
+        tables = []
 
         if stage_df is not None and len(stage_df) > 0:
-            html += "<h3>Stage Metrics</h3>"
-            html += stage_df.to_html(index=False, classes="data-table")
+            # Select useful columns and exclude run_id
+            stage_cols = [
+                "stage_name",
+                "num_workers",
+                "input_records",
+                "output_records",
+                "pass_rate",
+                "total_time",
+                "avg_throughput",
+                "error_count",
+            ]
+            stage_display = stage_df[[col for col in stage_cols if col in stage_df.columns]].copy()
+
+            # Define formatting rules
+            format_rules = {
+                "pass_rate": ("percent", 1),
+                "total_time": ("time", 2),
+                "avg_throughput": ("number", 1),
+                "input_records": ("integer", 0),
+                "output_records": ("integer", 0),
+            }
+
+            tables.append(
+                {
+                    "title": "Stage Metrics",
+                    "columns": list(stage_display.columns),
+                    "rows": stage_display.to_dict("records"),
+                    "formats": format_rules,
+                }
+            )
 
         if operator_df is not None and len(operator_df) > 0:
-            html += "<h3>Operator Metrics</h3>"
-            html += operator_df.to_html(index=False, classes="data-table")
+            # Aggregate to operator level (sum across workers)
+            op_agg = (
+                operator_df.groupby(["stage_name", "operator_name"])
+                .agg(
+                    {
+                        "worker_id": "count",  # Count number of workers
+                        "input_records": "sum",
+                        "output_records": "sum",
+                        "pass_rate": "mean",
+                        "total_time": "max",  # Use max as bottleneck
+                        "avg_latency": "mean",
+                        "throughput": ["mean", "min", "max"],  # Worker throughput stats
+                        "error_count": "sum",
+                        "timestamp": "min",  # Preserve execution order
+                    }
+                )
+                .reset_index()
+            )
 
-        html += "</div>"
-        return html
+            # Flatten multi-level columns from aggregation
+            op_agg.columns = ["_".join(col).strip("_") if col[1] else col[0] for col in op_agg.columns.values]
 
-    def _wrap_html(self, run_id: str, run_series: pd.Series, sections: list[str]) -> str:
-        """Wrap sections in complete HTML document."""
-        return f"""<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Run {run_id} - Pipeline Metrics Report</title>
-    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
-    <style>
-        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-        body {{
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            padding: 20px;
-            color: #2c3e50;
-        }}
-        .container {{
-            max-width: 1600px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-            overflow: hidden;
-        }}
-        .header {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 40px;
-            text-align: center;
-        }}
-        .header h1 {{ font-size: 36px; margin-bottom: 10px; }}
-        .header .run-id {{ font-size: 18px; opacity: 0.9; }}
-        .header .timestamp {{ font-size: 14px; opacity: 0.7; margin-top: 10px; }}
-        .content {{ padding: 40px; }}
-        .section {{
-            margin-bottom: 60px;
-            padding-bottom: 40px;
-            border-bottom: 2px solid #ecf0f1;
-        }}
-        .section:last-child {{ border-bottom: none; }}
-        .section h2 {{
-            font-size: 28px;
-            color: #2c3e50;
-            margin-bottom: 30px;
-            padding-bottom: 15px;
-            border-bottom: 3px solid #667eea;
-        }}
-        .section h3 {{
-            font-size: 20px;
-            color: #34495e;
-            margin: 30px 0 15px 0;
-        }}
-        .kpi-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 20px;
-            margin: 30px 0;
-        }}
-        .kpi-card {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 25px;
-            border-radius: 12px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-            transition: transform 0.2s;
-        }}
-        .kpi-card:hover {{ transform: translateY(-5px); }}
-        .kpi-label {{
-            font-size: 14px;
-            opacity: 0.9;
-            margin-bottom: 10px;
-            font-weight: 500;
-        }}
-        .kpi-value {{
-            font-size: 36px;
-            font-weight: bold;
-            margin: 10px 0;
-        }}
-        .kpi-unit {{
-            font-size: 13px;
-            opacity: 0.8;
-        }}
-        .alert {{
-            padding: 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-            border-left: 4px solid;
-        }}
-        .alert-warning {{
-            background: #fff3cd;
-            border-color: #f39c12;
-            color: #856404;
-        }}
-        .data-table {{
-            width: 100%;
-            border-collapse: collapse;
-            margin: 20px 0;
-            font-size: 14px;
-        }}
-        .data-table th {{
-            background: #667eea;
-            color: white;
-            padding: 12px;
-            text-align: left;
-            font-weight: 600;
-        }}
-        .data-table td {{
-            padding: 10px 12px;
-            border-bottom: 1px solid #ecf0f1;
-        }}
-        .data-table tr:hover {{ background: #f8f9fa; }}
-        .footer {{
-            text-align: center;
-            padding: 30px;
-            background: #f8f9fa;
-            color: #7f8c8d;
-            font-size: 14px;
-        }}
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>📊 Pipeline Metrics Report</h1>
-            <div class="run-id">Run ID: <strong>{run_id}</strong></div>
-            <div class="timestamp">Started: {run_series['start_time']} | Ended: {run_series['end_time']}</div>
-            <div class="timestamp">Generated: {datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")}</div>
-        </div>
-        <div class="content">
-            {''.join(sections)}
-        </div>
-        <div class="footer">
-            <p><strong>Mega Data Factory</strong> - Data Pipeline Metrics & Analytics</p>
-            <p style="margin-top: 10px;">Senior Data Analyst Report | Run-Level Analysis</p>
-        </div>
-    </div>
-</body>
-</html>"""
+            # Rename columns
+            op_agg = op_agg.rename(
+                columns={
+                    "worker_id_count": "num_workers",
+                    "input_records_sum": "input_records",
+                    "output_records_sum": "output_records",
+                    "pass_rate_mean": "pass_rate",
+                    "total_time_max": "total_time",
+                    "avg_latency_mean": "avg_latency",
+                    "error_count_sum": "error_count",
+                    "timestamp_min": "timestamp",
+                    "throughput_mean": "worker_avg_throughput",
+                    "throughput_min": "worker_min_throughput",
+                    "throughput_max": "worker_max_throughput",
+                }
+            )
+
+            # Calculate overall throughput (total records / max time)
+            op_agg["overall_throughput"] = op_agg["input_records"] / op_agg["total_time"]
+
+            # Sort by stage and timestamp to preserve execution order
+            op_agg = op_agg.sort_values(["stage_name", "timestamp"])
+
+            # Select and order columns for display
+            op_cols = [
+                "stage_name",
+                "operator_name",
+                "num_workers",
+                "input_records",
+                "output_records",
+                "pass_rate",
+                "total_time",
+                "avg_latency",
+                "overall_throughput",
+                "worker_avg_throughput",
+                "worker_min_throughput",
+                "worker_max_throughput",
+                "error_count",
+            ]
+            op_display = op_agg[[col for col in op_cols if col in op_agg.columns]].copy()
+
+            # Define formatting rules
+            format_rules = {
+                "pass_rate": ("percent", 1),
+                "total_time": ("time", 2),
+                "avg_latency": ("latency", 2),
+                "overall_throughput": ("number", 1),
+                "worker_avg_throughput": ("number", 1),
+                "worker_min_throughput": ("number", 1),
+                "worker_max_throughput": ("number", 1),
+                "input_records": ("integer", 0),
+                "output_records": ("integer", 0),
+            }
+
+            tables.append(
+                {
+                    "title": "Operator Metrics (Aggregated by Operator)",
+                    "columns": list(op_display.columns),
+                    "rows": op_display.to_dict("records"),
+                    "formats": format_rules,
+                }
+            )
+
+        return tables
 
     def _generate_simple_html(
         self,
@@ -746,10 +929,10 @@ class MetricsReporter:
         <table border="1">
             <tr><th>Metric</th><th>Value</th></tr>
             <tr><td>Run ID</td><td>{run_id}</td></tr>
-            <tr><td>Duration</td><td>{run_series['duration']:.2f}s</td></tr>
-            <tr><td>Input Records</td><td>{int(run_series['total_input_records']):,}</td></tr>
-            <tr><td>Output Records</td><td>{int(run_series['total_output_records']):,}</td></tr>
-            <tr><td>Pass Rate</td><td>{run_series['overall_pass_rate']:.2f}%</td></tr>
+            <tr><td>Duration</td><td>{run_series["duration"]:.2f}s</td></tr>
+            <tr><td>Input Records</td><td>{int(run_series["total_input_records"]):,}</td></tr>
+            <tr><td>Output Records</td><td>{int(run_series["total_output_records"]):,}</td></tr>
+            <tr><td>Pass Rate</td><td>{run_series["overall_pass_rate"]:.2f}%</td></tr>
         </table>
         """)
 
@@ -763,7 +946,7 @@ class MetricsReporter:
 <html><head><meta charset="UTF-8"><title>Run {run_id} Report</title></head>
 <body style="font-family: Arial; padding: 20px;">
 <h1>Pipeline Metrics Report - Run {run_id}</h1>
-{''.join(sections)}
+{"".join(sections)}
 </body></html>"""
 
     def publish_to_huggingface(

@@ -14,13 +14,14 @@ stages:
   - name: basic_stage
     operators:
       - name: image_metadata_refiner
-      - name: image_technical_quality_refiner  # Rust-accelerated
+      - name: image_technical_quality_refiner
       - name: image_quality_filter
         params:
           min_width: 128
           min_height: 128
           max_compression_artifacts: 0.8
           min_information_entropy: 0.0
+      - name: image_phash_deduplicator
     worker:
       num_replicas: 2
       resources:

@@ -107,9 +107,40 @@ class MetricsAggregator:
             )
 
         # Aggregate metrics
+        # Key insight:
+        # - Within a stage, operators execute serially
+        # - Each operator may have multiple workers (data parallelism)
+        # - Workers split and process different parts of data (additive within operator)
+        #
+        # So: Group by operator_name, sum within operator, then take first/last for stage
+
+        from collections import defaultdict
+        ops_by_name = defaultdict(list)
+        for m in operator_metrics:
+            ops_by_name[m.operator_name].append(m)
+
+        # Preserve operator order by timestamp (execution order)
+        operator_first_metrics = []
+        for op_name, metrics_list in ops_by_name.items():
+            first_metric = min(metrics_list, key=lambda m: m.timestamp)
+            operator_first_metrics.append((op_name, first_metric.timestamp))
+
+        operator_first_metrics.sort(key=lambda x: x[1])
+        operator_names_ordered = [op_name for op_name, _ in operator_first_metrics]
+
+        # Stage input = first operator's total input (sum across workers)
+        # Stage output = last operator's total output (sum across workers)
+        if operator_names_ordered:
+            first_op = operator_names_ordered[0]
+            last_op = operator_names_ordered[-1]
+
+            total_input = sum(m.input_records for m in ops_by_name[first_op])
+            total_output = sum(m.output_records for m in ops_by_name[last_op])
+        else:
+            total_input = 0
+            total_output = 0
+
         num_workers = len({m.worker_id for m in operator_metrics})
-        total_input = sum(m.input_records for m in operator_metrics)
-        total_output = sum(m.output_records for m in operator_metrics)
         pass_rate = (100.0 * total_output / total_input) if total_input > 0 else 0.0
 
         # Use max time as bottleneck

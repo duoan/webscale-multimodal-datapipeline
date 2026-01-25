@@ -201,7 +201,8 @@ class MetricsWriter:
         table = pa.table(data, schema=self.RUN_SCHEMA)
 
         # Write to Parquet with compression
-        output_file = self.runs_path / f"run_{metrics.run_id}.parquet"
+        # Note: run_id already contains "run_" prefix, so don't add it again
+        output_file = self.runs_path / f"{metrics.run_id}.parquet"
         pq.write_table(
             table,
             output_file,

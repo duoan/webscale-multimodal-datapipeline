@@ -21,8 +21,9 @@ stages:
           min_height: 128
           max_compression_artifacts: 0.8
           min_information_entropy: 0.0
+      - name: image_phash_deduplicator
     worker:
-      num_replicas: 2
+      num_replicas: 4
       resources:
         cpu: 1
 
@@ -37,10 +38,10 @@ stages:
           inference_batch_size: 32
           use_fp16: true
     worker:
-      num_replicas: 1
+      num_replicas: 16
       resources:
         cpu: 2
-        gpu: 1  # Require GPU for embedding extraction
+        gpu: 0.2  # Require GPU for embedding extraction
 
 # Output
 data_writer:
@@ -51,9 +52,9 @@ data_writer:
 
 # Execution settings
 executor:
-  max_samples: 1000
-  batch_size: 200
-  dedup_num_buckets: 2
+  max_samples: 102400
+  batch_size: 1024
+  dedup_num_buckets: 4
 
   # Metrics configuration with HTML report
   metrics:

@@ -19,6 +19,21 @@ This repository aims to replicate SOTA multimodal datapipelines, like
 - [Cosmos World Foundation Model Platform for Physical AI](https://arxiv.org/pdf/2501.03575)
 - [Imagen 3](https://arxiv.org/abs/2408.07009)
 
+
+## Pipeline Run Reports
+
+https://huggingface.co/spaces/classtag/mega-data-factory-reports
+This space contains interactive HTML reports for pipeline runs, showcasing metrics, visualizations, and performance statistics.
+
+### Data Quality Funnel
+![](images/data_quality_funnel.png)
+
+### Data Flow Sankey
+![](images/data_flow_sankey.png)
+
+### Data Detail Metrics
+![](images/data_detail_metrics.png)
+
 ## Installation
 
 ```bash
