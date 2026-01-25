@@ -1,0 +1,87 @@
+# Example pipeline configuration with distributed data loading
+#
+# This configuration demonstrates mega-scale data processing with:
+# - 8 parallel DataLoader workers (sharded loading)
+# - 4 processing stage workers
+# - Checkpoint support for resume capability
+# - Metrics and rejected samples collection
+
+# Data source (distributed loading with file-based architecture)
+data_loader:
+  type: HuggingFaceLoader
+  params:
+    dataset_name: "jp1924/Laion400m-1"
+    split: "train"
+  num_workers: 2  # Number of parallel loader workers for distributed I/O
+  checkpoint_interval: 1000  # Checkpoint every 1000 records per worker
+
+# Processing stages
+stages:
+  # Stage 1: Basic metadata and quality (CPU, Rust-accelerated)
+  - name: basic_stage
+    operators:
+      - name: image_metadata_refiner
+      - name: image_technical_quality_refiner
+      - name: image_quality_filter
+        params:
+          min_width: 128
+          min_height: 128
+          max_compression_artifacts: 0.8
+          min_information_entropy: 0.0
+    worker:
+      min_replicas: 2  # Can start with just 1 worker
+      max_replicas: 4  # Will use up to 4 if CPUs available
+      resources:
+        cpu: 1
+
+  - name: dedup_stage
+    operators:
+    - name: image_phash_deduplicator
+    worker:
+      min_replicas: 2   # Minimum 4 workers for reasonable throughput
+      max_replicas: 8  # Will use up to 16 if CPUs available
+      resources:
+        cpu: 1
+
+  # Stage 3: Embedding extraction (GPU)
+  - name: embedding_stage
+    operators:
+      - name: image_clip_embedding_refiner
+        params:
+          model_name: "ViT-L-14"
+          pretrained: "openai"
+          device: "auto"
+          inference_batch_size: 128
+          use_fp16: true
+    worker:
+      min_replicas: 2   # Minimum 4 workers (1 GPU at 0.2 each)
+      max_replicas: 4  # Maximum 32 workers (6.4 GPUs at 0.2 each)
+      resources:
+        cpu: 2
+        gpu: 1  # Require GPU for embedding extraction
+
+# Output
+data_writer:
+  type: ParquetDataWriter
+  params:
+    output_path: "./output/distributed/parquet_data"
+    table_name: "image_profiles"
+
+# Execution settings
+executor:
+  max_samples: 102400
+  batch_size: 1024
+  dedup_num_buckets: 4
+
+  # Rejected samples collection (for deep dive analysis)
+  rejected_samples:
+    enabled: true
+    output_path: "./output/distributed/parquet_data_rejected"
+
+  # Metrics configuration
+  metrics:
+    enabled: true
+    output_path: "./output/distributed/metrics"
+    collect_custom_metrics: false
+    write_on_completion: true
+    generate_report: true  # Generate HTML report

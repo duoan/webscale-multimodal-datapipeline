@@ -1,54 +1,130 @@
 """
-HuggingFace Data Loader
+HuggingFace File-based Data Loader
 
-Loads datasets from HuggingFace Hub.
+Two-layer architecture:
+1. Coordinator: Scan files and assign to workers
+2. Workers: Read assigned files and yield records
+
+No streaming parameter - the entire system is streaming by design.
 """
 
 from collections.abc import Iterator
 from typing import Any
 
-from datasets import Image as HFImage
-from datasets import load_dataset
+import pyarrow.parquet as pq
+from huggingface_hub import HfFileSystem
 
 from mega_data_factory.framework import DataLoader
 
 
-class HuggingFaceDataLoader(DataLoader):
-    """DataLoader for HuggingFace datasets."""
+class HuggingFaceLoader(DataLoader):
+    """File-based loader for HuggingFace datasets.
 
-    def __init__(self, dataset_name: str, split: str = "train", streaming: bool = True):
-        """Initialize HuggingFace data loader.
+    Two-layer architecture:
+    - Layer 1 (Coordinator/Executor): get_file_list() -> scan all files
+    - Layer 2 (Worker): load_files() -> read assigned files
+
+    The entire system is streaming - no "streaming" parameter needed.
+    """
+
+    def __init__(
+        self,
+        dataset_name: str,
+        split: str = "train",
+    ):
+        """Initialize file-based HuggingFace loader.
 
         Args:
-            dataset_name: Name of the HuggingFace dataset
-            split: Dataset split to load
-            streaming: Whether to use streaming mode
+            dataset_name: HuggingFace dataset name (e.g., "jp1924/Laion400m-1")
+            split: Dataset split (default: "train")
         """
         self.dataset_name = dataset_name
         self.split = split
-        self.streaming = streaming
+        self._file_list = None
 
-    def load(self, **kwargs) -> Iterator[dict[str, Any]]:
-        """Load dataset and return iterator.
+    def get_file_list(self) -> list[str]:
+        """[Layer 1] Get sorted list of data files from HuggingFace repo.
+
+        This is called by the coordinator to get all files before distributing
+        to workers.
+
+        Returns:
+            Sorted list of file paths (e.g., ["datasets/.../data/train-00000.parquet", ...])
+        """
+        if self._file_list is not None:
+            return self._file_list
+
+        fs = HfFileSystem()
+        repo_path = f"datasets/{self.dataset_name}"
+
+        # List files in data directory
+        try:
+            files = fs.ls(f"{repo_path}/data", detail=True)
+        except Exception:
+            # Fallback: try root directory
+            files = fs.ls(repo_path, detail=True)
+
+        # Filter for data files (parquet, arrow, csv)
+        data_extensions = (".parquet", ".arrow", ".csv", ".jsonl")
+        data_files = [f["name"] for f in files if any(f["name"].endswith(ext) for ext in data_extensions)]
+
+        # Sort by filename for consistent ordering
+        self._file_list = sorted(data_files)
+        print(f"[HuggingFaceLoader] Found {len(self._file_list)} data files for {self.dataset_name}/{self.split}")
+
+        return self._file_list
+
+    def load_files(
+        self,
+        file_list: list[str],
+        worker_id: int | None = None,
+        checkpoint: dict[str, Any] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        """[Layer 2] Load assigned files and yield records.
+
+        This is called by workers to read their assigned files.
 
         Args:
-            **kwargs: Additional parameters for dataset loading
+            file_list: List of file paths to read
+            worker_id: Optional worker ID for logging
+            checkpoint: Optional checkpoint with 'records_processed' (standard format)
 
         Yields:
             Records as dictionaries
         """
-        print(f"Loading HuggingFace dataset: {self.dataset_name} (split: {self.split}, streaming: {self.streaming})...")
-        ds = load_dataset(self.dataset_name, split=self.split, streaming=self.streaming, **kwargs)
-        print("Dataset loaded, starting to iterate records...")
+        worker_label = f"Worker {worker_id}" if worker_id is not None else "Loader"
 
-        if self.streaming:
-            ds = ds.cast_column("image", HFImage(decode=False))
+        # Resume from checkpoint if provided
+        # Standard checkpoint format uses records_processed
+        skip_records = checkpoint.get("records_processed", 0) if checkpoint else 0
 
-        record_count = 0
-        for record in ds:
-            record_count += 1
-            if record_count == 1:
-                print("First record received, continuing...")
-            elif record_count % 50 == 0:
-                print(f"  Yielded {record_count} records from data stream...")
-            yield record
+        if skip_records > 0:
+            print(f"[{worker_label}] Resuming from record {skip_records}")
+
+        # Process assigned files
+        total_records = 0
+        records_yielded = 0
+
+        for file_idx, file_path in enumerate(file_list):
+            filename = file_path.split("/")[-1]
+
+            print(f"[{worker_label}] Loading file {file_idx + 1}/{len(file_list)}: {filename}")
+
+            # Read parquet file
+            table = pq.read_table(f"hf://{file_path}")
+
+            # Convert to records and yield
+            for batch in table.to_batches(max_chunksize=1000):
+                for record in batch.to_pylist():
+                    total_records += 1
+
+                    # Skip records if resuming from checkpoint
+                    if total_records <= skip_records:
+                        continue
+
+                    records_yielded += 1
+                    yield record
+
+            print(f"[{worker_label}] Completed file {file_idx + 1}/{len(file_list)}, total records processed: {total_records}")
+
+        print(f"[{worker_label}] Completed all {len(file_list)} files (yielded {records_yielded} records)")

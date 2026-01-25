@@ -63,6 +63,7 @@ dmypy.json
 .pyre/
 
 # Project specific
+output/
 iceberg_data/
 parquet_data/
 training_data/

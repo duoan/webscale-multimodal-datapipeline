@@ -1,0 +1,37 @@
+# Test configuration for file-based HuggingFace loader
+# Simple, efficient, file-based sharding
+
+data_loader:
+  type: HuggingFaceFileLoader  # New file-based loader
+  params:
+    dataset_name: "jp1924/Laion400m-1"
+    split: "train"
+    streaming: true
+  num_workers: 8  # 441 files / 8 workers = ~55 files per worker
+  checkpoint_interval: 1000
+
+stages:
+  - name: basic_stage
+    operators:
+      - name: image_metadata_refiner
+      - name: image_quality_filter
+        params:
+          min_width: 128
+          min_height: 128
+    worker:
+      min_replicas: 1
+      max_replicas: 2
+      resources:
+        cpu: 1
+
+data_writer:
+  type: ParquetDataWriter
+  params:
+    output_path: "./output/test_file_loader"
+
+executor:
+  max_samples: 5000
+  batch_size: 100
+  metrics:
+    enabled: true
+    output_path: "./output/test_file_loader/metrics"

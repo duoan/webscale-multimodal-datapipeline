@@ -35,10 +35,10 @@ stages:
           model_name: "ViT-L-14"
           pretrained: "openai"
           device: "auto"
-          inference_batch_size: 32
+          inference_batch_size: 128
           use_fp16: true
     worker:
-      num_replicas: 16
+      num_replicas: 32
       resources:
         cpu: 2
         gpu: 0.2  # Require GPU for embedding extraction

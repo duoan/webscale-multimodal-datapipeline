@@ -1,0 +1,56 @@
+# Example pipeline configuration with CommonCrawl data loading
+#
+# This configuration demonstrates loading data from CommonCrawl using
+# distributed file-based loading with multiple workers.
+#
+# Text extraction is done by trafilatura inside the loader.
+
+# Data source (CommonCrawl with distributed loading)
+data_loader:
+  type: CommonCrawlWarcStreamLoader
+  params:
+    crawl_id: "CC-MAIN-2025-51"
+    max_warc_files: 10  # Limit to 10 WARC files for testing
+    only_html: true
+    require_200: true
+    extract_text: true  # Extract clean text using trafilatura
+    include_comments: false
+    include_tables: true
+    include_links: false
+    include_html: false  # Don't include raw HTML to save space
+    max_payload_bytes: 2000000  # 2MB cap per page
+  num_workers: 4  # Number of parallel loader workers
+  checkpoint_interval: 1000
+
+# Processing stages (text is already extracted by trafilatura)
+stages:
+  # Stage 1: Basic filtering (you can add your own operators here)
+  - name: basic_filtering
+    operators: []
+    worker:
+      min_replicas: 2
+      max_replicas: 4
+      resources:
+        cpu: 1
+
+# Output
+data_writer:
+  type: ParquetDataWriter
+  params:
+    output_path: "./output/commoncrawl/parquet_data"
+    table_name: "web_pages"
+
+# Execution settings
+executor:
+  max_samples: 10000  # Process 10k records total
+  batch_size: 100
+
+  # Rejected samples collection
+  rejected_samples:
+    enabled: true
+    output_path: "./output/commoncrawl/rejected"
+
+  # Metrics configuration
+  metrics:
+    enabled: true
+    output_path: "./output/commoncrawl/metrics"

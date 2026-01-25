@@ -125,6 +125,16 @@ class Executor:
             }
             print(f"Rejected samples collection enabled. Output: {rejected_output_path}")
 
+        # Distributed loading is always enabled for mega-scale processing
+        print(
+            f"Distributed data loading: {config.data_loader.num_workers} workers, "
+            f"batch_size={config.executor.batch_size}"
+        )
+
+        # Create DataLoaderWorker actors
+        self.loader_workers: list[Any] = []
+        self._create_loader_workers(config)
+
         # Create stages (Ray Actors)
         # Store workers grouped by stage (each stage has multiple replicas)
         self.stages: list[list[Any]] = []  # List of stage groups
@@ -149,55 +159,161 @@ class Executor:
 
                     stage_operators.append(op_instance)
 
-            # Create num_replicas instances for this stage
-            num_replicas = stage_config.worker.num_replicas or 1
-            stage_workers = []  # Collect all workers for this stage
+            # Dynamic worker allocation with min/max replicas
+            min_replicas = stage_config.worker.min_replicas
+            max_replicas = stage_config.worker.max_replicas
 
-            for replica_id in range(num_replicas):
-                # All workers share the same writer configuration
-                # Iceberg supports concurrent writes from multiple workers to the same table
-                worker_writer_params = writer_params.copy()
-                worker_writer = DataWriterRegistry.create(self.writer_config.type, worker_writer_params)
+            print(
+                f"  Creating workers for stage '{stage_config.name}': "
+                f"min={min_replicas}, max={max_replicas}"
+            )
 
-                # Create rejected writer if enabled
-                rejected_writer = None
-                if self.collect_rejected and self.rejected_writer_config:
-                    rejected_writer = DataWriterRegistry.create(
-                        self.rejected_writer_config["type"],
-                        self.rejected_writer_config["params"].copy(),
+            # Try to create up to max_replicas workers
+            stage_workers = []  # Successfully created workers
+            failed_count = 0
+
+            for replica_id in range(max_replicas):
+                try:
+                    # All workers share the same writer configuration
+                    # Iceberg supports concurrent writes from multiple workers to the same table
+                    worker_writer_params = writer_params.copy()
+                    worker_writer = DataWriterRegistry.create(self.writer_config.type, worker_writer_params)
+
+                    # Create rejected writer if enabled
+                    rejected_writer = None
+                    if self.collect_rejected and self.rejected_writer_config:
+                        rejected_writer = DataWriterRegistry.create(
+                            self.rejected_writer_config["type"],
+                            self.rejected_writer_config["params"].copy(),
+                        )
+
+                    worker_name = f"{stage_config.name}_{replica_id}" if max_replicas > 1 else stage_config.name
+
+                    # Extract num_cpus and num_gpus from resources if present, otherwise use defaults
+                    num_cpus = stage_config.worker.resources.get("cpu", 1)
+                    num_gpus = stage_config.worker.resources.get("gpu", 0)
+                    # Create a copy of resources without 'cpu' and 'gpu' (Ray handles these separately)
+                    ray_resources = {k: v for k, v in stage_config.worker.resources.items() if k not in ("cpu", "gpu")}
+
+                    # Create Ray Actor worker with name for Ray Dashboard visibility
+                    # Ray Actor names must be unique
+                    actor_name = f"pipeline_{worker_name}"
+                    worker = RayWorker.options(
+                        name=actor_name,
+                        num_cpus=num_cpus,
+                        num_gpus=num_gpus,
+                        resources=ray_resources if ray_resources else None,
+                    ).remote(
+                        worker_name,
+                        stage_operators,
+                        data_writer=worker_writer,
+                        rejected_writer=rejected_writer,
+                        collect_rejected=self.collect_rejected,
                     )
 
-                worker_name = f"{stage_config.name}_{replica_id}" if num_replicas > 1 else stage_config.name
+                    stage_workers.append(worker)
 
-                # Extract num_cpus and num_gpus from resources if present, otherwise use defaults
-                num_cpus = stage_config.worker.resources.get("cpu", 1)
-                num_gpus = stage_config.worker.resources.get("gpu", 0)
-                # Create a copy of resources without 'cpu' and 'gpu' (Ray handles these separately)
-                ray_resources = {k: v for k, v in stage_config.worker.resources.items() if k not in ("cpu", "gpu")}
+                except Exception as e:
+                    failed_count += 1
+                    print(f"    ⚠️  Failed to create worker {replica_id}: {e}")
+                    # Stop if we can't reach min_replicas even if we create all remaining workers
+                    if (len(stage_workers) + (max_replicas - replica_id - 1)) < min_replicas:
+                        raise RuntimeError(
+                            f"Cannot reach min_replicas={min_replicas} for stage '{stage_config.name}': "
+                            f"only {len(stage_workers)} created, {failed_count} failed"
+                        )
 
-                # Create Ray Actor worker with name for Ray Dashboard visibility
-                # Ray Actor names must be unique
-                actor_name = f"pipeline_{worker_name}"
-                worker = RayWorker.options(
-                    name=actor_name,
-                    num_cpus=num_cpus,
-                    num_gpus=num_gpus,
-                    resources=ray_resources if ray_resources else None,
-                ).remote(
-                    worker_name,
-                    stage_operators,
-                    data_writer=worker_writer,
-                    rejected_writer=rejected_writer,
-                    collect_rejected=self.collect_rejected,
+            # Check we have at least min_replicas
+            actual_workers = len(stage_workers)
+            if actual_workers < min_replicas:
+                raise RuntimeError(
+                    f"Failed to create minimum workers for stage '{stage_config.name}': "
+                    f"created {actual_workers}, required {min_replicas}"
                 )
 
-                stage_workers.append(worker)
+            if failed_count > 0:
+                print(
+                    f"    ⚠️  {failed_count} workers failed to create, "
+                    f"using {actual_workers}/{max_replicas} workers"
+                )
+            print(f"    ✅ {actual_workers}/{max_replicas} workers created for stage '{stage_config.name}'")
 
-            # Add all workers for this stage as a group
+            # Add all ready workers for this stage as a group
             self.stages.append(stage_workers)
             self.stage_indices.append(0)
 
-    def _submit_batch_chain(self, records: list[dict[str, Any]]) -> ray.ObjectRef:
+    def _create_loader_workers(self, config: PipelineConfig):
+        """Create DataLoaderWorker actors for distributed data loading.
+
+        Two-layer architecture:
+        1. Executor (here): Scan files and assign to workers
+        2. Workers: Read assigned files
+
+        Args:
+            config: Pipeline configuration
+        """
+        from .loader_worker import DataLoaderWorker
+
+        num_workers = config.data_loader.num_workers
+        batch_size = config.executor.batch_size
+        checkpoint_interval = config.data_loader.checkpoint_interval
+
+        # Calculate max_records per worker if executor.max_samples is set
+        max_records_per_worker = None
+        if config.executor.max_samples is not None:
+            max_records_per_worker = config.executor.max_samples // num_workers
+            print(
+                f"Max samples: {config.executor.max_samples} total, "
+                f"~{max_records_per_worker} per worker ({num_workers} workers)"
+            )
+
+        print(f"Creating {num_workers} DataLoaderWorker actors...")
+
+        # Layer 1: Executor scans files if loader supports it
+        assigned_files_per_worker = None
+        if hasattr(self.data_loader, "get_file_list"):
+            print("  Scanning data files...")
+            all_files = self.data_loader.get_file_list()
+            total_files = len(all_files)
+
+            # Divide files among workers
+            files_per_worker = total_files // num_workers
+            remainder = total_files % num_workers
+
+            assigned_files_per_worker = []
+            for worker_id in range(num_workers):
+                if worker_id < remainder:
+                    start_file = worker_id * (files_per_worker + 1)
+                    end_file = start_file + files_per_worker + 1
+                else:
+                    start_file = worker_id * files_per_worker + remainder
+                    end_file = start_file + files_per_worker
+
+                assigned_files = all_files[start_file:end_file]
+                assigned_files_per_worker.append(assigned_files)
+                print(f"  Worker {worker_id}: {len(assigned_files)} files (file {start_file}-{end_file - 1})")
+
+        # Layer 2: Create workers with assigned files
+        for shard_id in range(num_workers):
+            assigned_files = assigned_files_per_worker[shard_id] if assigned_files_per_worker else None
+
+            worker = DataLoaderWorker.options(
+                name=f"pipeline_loader_{shard_id}",
+                num_cpus=1,  # Each loader uses 1 CPU
+            ).remote(
+                data_loader=self.data_loader,
+                shard_id=shard_id,
+                num_shards=num_workers,
+                batch_size=batch_size,
+                checkpoint_interval=checkpoint_interval,
+                assigned_files=assigned_files,  # Pass assigned files
+                max_records=max_records_per_worker,  # Pass max_records per worker
+            )
+            self.loader_workers.append(worker)
+
+        print(f"Created {len(self.loader_workers)} DataLoaderWorker actors")
+
+    def _submit_batch_chain(self, records: list[dict[str, Any]]) -> tuple[ray.ObjectRef, list[ray.ObjectRef]]:
         """Submit a batch through all stages using Ray ObjectRef chaining.
 
         Core magic: Pass ObjectRefs like a chain. Ray automatically waits for
@@ -209,11 +325,12 @@ class Executor:
             records: List of input records
 
         Returns:
-            Ray ObjectRef to the final result
+            Tuple of (final_ref, all_intermediate_refs) for cleanup
         """
         # Start with initial data (can be actual data or ObjectRef if from elsewhere)
         # Here we put raw data into object store to get a Ref for unified handling
         current_ref = ray.put(records)
+        all_refs = [current_ref]  # Track all refs for cleanup
 
         # Chain through all stages
         # Only the last stage writes data (should_write=True)
@@ -230,18 +347,19 @@ class Executor:
             is_last_stage = stage_idx == num_stages - 1
             print(f"    Submitting to stage {stage_idx + 1}/{num_stages} (write={is_last_stage})...")
             current_ref = worker.process_batch_with_records.remote(current_ref, should_write=is_last_stage)
+            all_refs.append(current_ref)
 
         print(f"    All {num_stages} stages submitted, returning final ref")
-        return current_ref
+        return current_ref, all_refs
 
     def _collect_completed(self, batch_pipeline: dict, max_in_flight: int) -> Iterator[tuple]:
-        """Check and yield completed tasks.
+        """Check and yield completed tasks, with ObjectRef cleanup.
 
         Always checks for completed batches (non-blocking), even if pipeline is not full.
         This ensures we yield results as soon as they're ready for true parallelism.
 
         Args:
-            batch_pipeline: Dict of batch_id -> (future, input_count)
+            batch_pipeline: Dict of batch_id -> (future, input_count, all_refs)
             max_in_flight: Maximum number of batches to keep in flight (0 = wait for all)
 
         Yields:
@@ -272,13 +390,13 @@ class Executor:
         for ref in ready_refs:
             # Find batch_id for this ref
             completed_batch_id = None
-            for bid, (fut, _) in batch_pipeline.items():
+            for bid, (fut, _, _) in batch_pipeline.items():
                 if fut == ref:
                     completed_batch_id = bid
                     break
 
             if completed_batch_id is not None:
-                input_count = batch_pipeline[completed_batch_id][1]
+                input_count, all_refs = batch_pipeline[completed_batch_id][1], batch_pipeline[completed_batch_id][2]
                 try:
                     result = ray.get(ref, timeout=1.0)
                     output_count = len(result) if result else 0
@@ -286,6 +404,13 @@ class Executor:
                 except Exception as e:
                     print(f"Task failed for batch {completed_batch_id}: {e}")
                     yield (input_count, 0)
+                finally:
+                    # CRITICAL: Free all ObjectRefs from Ray object store to prevent memory leak
+                    for obj_ref in all_refs:
+                        try:
+                            ray._private.internal_api.free([obj_ref])
+                        except Exception:
+                            pass  # Ignore errors during cleanup
 
                 # Remove from pipeline
                 del batch_pipeline[completed_batch_id]
@@ -307,74 +432,144 @@ class Executor:
             yield from self._execute_impl()
 
     def _execute_impl(self) -> Iterator[tuple]:
-        """Internal implementation of execute without metrics tracking."""
-        # Load data
-        print("Loading data stream...")
-        data_stream = self.data_loader.load()
-        print("Data stream loaded, starting to process records...")
+        """Internal implementation of execute with distributed loading.
 
-        # Process in batches with pipeline parallelism
-        records = []
-        count = 0
+        Data loading is always distributed using DataLoaderWorker actors.
+        """
+        yield from self._execute_distributed()
+
+    def _execute_distributed(self) -> Iterator[tuple]:
+        """Distributed loading with streaming pipeline parallelism.
+
+        Each loader worker streams batches as they're ready, enabling true
+        pipeline parallelism where data loading and processing happen concurrently.
+        """
+        print("🚀 Starting distributed data loading with streaming pipeline...")
+        print(f"   Loader workers: {len(self.loader_workers)}")
+        print(f"   Processing stages: {len(self.stages)}")
+        print(f"   Batch size: {self.config.executor.batch_size}")
+
+        # Calculate max records per worker if max_samples is set
+        max_records_per_worker = None
+        if self.config.executor.max_samples:
+            max_records_per_worker = self.config.executor.max_samples // len(self.loader_workers)
+            print(f"   Max records per worker: {max_records_per_worker}")
 
         # Maintain a pipeline of batches being processed across stages
-        batch_pipeline = {}  # batch_id -> (future, input_count)
+        batch_pipeline = {}  # batch_id -> (future, input_count, all_refs)
         next_batch_id = 0
-        # Limit concurrent batches to avoid overwhelming system
-        # Calculate based on number of stages and workers
         total_workers = sum(len(stage) for stage in self.stages)
-        max_in_flight = min(8, max(2, total_workers // 2))  # Reasonable limit: 2-8 batches
 
-        print(
-            f"Starting to iterate data stream (max_in_flight={max_in_flight}, batch_size={self.config.executor.batch_size})..."
-        )
-        for record in data_stream:
-            records.append(record)
-            count += 1
+        # BACKPRESSURE CONTROL: Aggressively limit in-flight batches
+        # Slower downstream stages (e.g., embedding) can cause memory buildup
+        # Keep pipeline shallow to prevent backpressure
+        max_in_flight = min(4, max(2, total_workers // 4))  # Very conservative
+        print(f"   Max in-flight batches: {max_in_flight} (backpressure control)")
 
-            if count % 50 == 0:
-                print(f"  Collected {count} records (batch: {len(records)}/{self.config.executor.batch_size})...")
+        # Track loader states
+        active_loaders = set(range(len(self.loader_workers)))  # Worker IDs still loading
+        loader_futures = {}  # worker_id -> pending future for next batch
+        loader_batch_counts = {i: 0 for i in range(len(self.loader_workers))}
+        loader_wait_count = 0  # Track how often loaders wait due to backpressure
 
-            if len(records) >= self.config.executor.batch_size:
-                print(f"  Batch full ({len(records)} records), submitting to {len(self.stages)} stages...")
-                # 1. Submit task chain using ObjectRef chaining
-                future = self._submit_batch_chain(records)
-                print(f"  Batch submitted, future: {future}")
+        # Start requesting first batch from each loader (up to max_in_flight)
+        print("Starting streaming from DataLoaderWorker actors...")
+        initial_requests = min(max_in_flight, len(self.loader_workers))
+        for worker_id in list(active_loaders)[:initial_requests]:
+            future = self.loader_workers[worker_id].get_next_batch.remote(
+                max_records=max_records_per_worker
+            )
+            loader_futures[worker_id] = future
 
-                # 2. Record task
-                batch_pipeline[next_batch_id] = (future, len(records))
-                next_batch_id += 1
-                records = []
+        # Main loop: continuously poll loader workers and submit batches
+        while active_loaders or batch_pipeline:
+            # BACKPRESSURE: Only request new batches if pipeline has capacity
+            pipeline_has_capacity = len(batch_pipeline) < max_in_flight
 
-                # 3. Collect all completed batches (non-blocking if pipeline not full)
-                # This ensures results are yielded as soon as they're ready
-                # For first batch, wait a bit to ensure it starts processing
-                if next_batch_id == 1:
-                    # First batch: wait a bit then check
-                    import time
+            # Check for ready batches from any active loader
+            if loader_futures:
+                ready_futures = list(loader_futures.values())
+                ready_refs, _ = ray.wait(ready_futures, num_returns=1, timeout=0.01)
 
-                    time.sleep(0.1)
+                if ready_refs:
+                    # Find which worker produced this batch
+                    completed_ref = ready_refs[0]
+                    worker_id = None
+                    for wid, future in loader_futures.items():
+                        if future == completed_ref:
+                            worker_id = wid
+                            break
 
-                while True:
-                    completed = list(self._collect_completed(batch_pipeline, max_in_flight))
-                    if not completed:
-                        break
-                    for res in completed:
-                        print(f"  Batch completed: {res}")
-                        yield res
+                    if worker_id is not None:
+                        # Get batch result
+                        result = ray.get(completed_ref)
+                        # CRITICAL: Free the loader's result ref immediately after getting data
+                        try:
+                            ray._private.internal_api.free([completed_ref])
+                        except Exception:
+                            pass
+                        del loader_futures[worker_id]
 
-            if self.config.executor.max_samples and count >= self.config.executor.max_samples:
-                break
+                        batch = result["batch"]
+                        completed = result["completed"]
 
-        # Process remaining records
-        if records:
-            future = self._submit_batch_chain(records)
-            batch_pipeline[next_batch_id] = (future, len(records))
+                        if batch:
+                            # Submit batch immediately to processing pipeline
+                            loader_batch_counts[worker_id] += 1
+                            final_ref, all_refs = self._submit_batch_chain(batch)
+                            batch_pipeline[next_batch_id] = (final_ref, len(batch), all_refs)
+                            next_batch_id += 1
 
-        # Wait for all remaining tasks to complete
+                            # Collect completed processing batches (non-blocking)
+                            for res in self._collect_completed(batch_pipeline, max_in_flight):
+                                yield res
+
+                        # BACKPRESSURE: Only request next batch if pipeline has capacity
+                        if not completed and pipeline_has_capacity:
+                            future = self.loader_workers[worker_id].get_next_batch.remote(
+                                max_records=max_records_per_worker
+                            )
+                            loader_futures[worker_id] = future
+                        elif not completed:
+                            # Loader is waiting due to backpressure
+                            loader_wait_count += 1
+                            if loader_wait_count % 10 == 0:
+                                print(
+                                    f"⚠️  Backpressure: Pipeline full ({len(batch_pipeline)}/{max_in_flight}), "
+                                    f"loader {worker_id} waiting..."
+                                )
+                        else:
+                            # Loader completed
+                            active_loaders.remove(worker_id)
+                            print(
+                                f"[Loader {worker_id}] Completed. "
+                                f"Produced {loader_batch_counts[worker_id]} batches. "
+                                f"Active loaders: {len(active_loaders)}"
+                            )
+
+            # Collect completed processing batches (non-blocking)
+            # This creates capacity for new batches
+            for res in self._collect_completed(batch_pipeline, max_in_flight):
+                yield res
+
+            # BACKPRESSURE: After collecting, check if we can resume paused loaders
+            if pipeline_has_capacity and not loader_futures:
+                # Find a paused loader (active but not currently loading)
+                for worker_id in active_loaders:
+                    if worker_id not in loader_futures:
+                        future = self.loader_workers[worker_id].get_next_batch.remote(
+                            max_records=max_records_per_worker
+                        )
+                        loader_futures[worker_id] = future
+                        break  # Only resume one at a time
+
+        # Wait for all remaining processing tasks to complete
+        print("All loaders completed, waiting for remaining processing...")
         while batch_pipeline:
             for res in self._collect_completed(batch_pipeline, 0):  # 0 means wait for all
                 yield res
+
+        print(f"✅ Streaming pipeline completed. Total loaders: {len(self.loader_workers)}")
 
     def _execute_with_metrics(self) -> Iterator[tuple]:
         """Execute pipeline with metrics tracking enabled."""

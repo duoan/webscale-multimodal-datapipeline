@@ -1,0 +1,38 @@
+# Test configuration for dynamic worker allocation
+# Small test to verify min/max replicas work correctly
+
+data_loader:
+  type: HuggingFaceDataLoader
+  params:
+    dataset_name: "jp1924/Laion400m-1"
+    split: "train"
+    streaming: true
+  num_workers: 2
+  checkpoint_interval: 500
+
+stages:
+  - name: basic_stage
+    operators:
+      - name: image_metadata_refiner
+      - name: image_quality_filter
+        params:
+          min_width: 256
+          min_height: 256
+    worker:
+      resources:
+        cpu: 1
+      # Will try to create 4 workers, but needs at least 1
+      min_replicas: 1
+      max_replicas: 4
+
+data_writer:
+  type: ParquetDataWriter
+  params:
+    output_path: "./output/test_dynamic"
+
+executor:
+  max_samples: 1000
+  batch_size: 100
+  metrics:
+    enabled: true
+    output_path: "./output/test_dynamic/metrics"

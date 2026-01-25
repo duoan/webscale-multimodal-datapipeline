@@ -10,19 +10,27 @@ from typing import Any
 
 
 class DataLoader(ABC):
-    """Abstract base class for data loaders."""
+    """Abstract base class for data loaders.
 
-    @abstractmethod
-    def load(self, **kwargs) -> Iterator[dict[str, Any]]:
-        """Load data and return an iterator over records.
+    File-based loaders implement:
+    - get_file_list() -> list[str]: Scan and return all data files
+    - load_files(file_list, ...) -> Iterator: Load assigned files
+    """
+
+    def create_checkpoint(self, shard_id: int, records_processed: int) -> dict[str, Any]:
+        """Create checkpoint data for resume support.
 
         Args:
-            **kwargs: Additional parameters for loading
+            shard_id: Shard ID being processed
+            records_processed: Number of records processed so far in this shard
 
-        Yields:
-            Records as dictionaries
+        Returns:
+            Checkpoint data dictionary
         """
-        pass
+        return {
+            "shard_id": shard_id,
+            "records_processed": records_processed,
+        }
 
 
 class DataWriter(ABC):

@@ -7,6 +7,8 @@ data_loader:
     dataset_name: "jp1924/Laion400m-1"
     split: "train"
     streaming: true
+  num_workers: 8  # Distributed loading workers
+  checkpoint_interval: 1000
 
 # Processing stages
 stages:

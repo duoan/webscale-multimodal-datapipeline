@@ -30,10 +30,41 @@ class OperatorConfig:
 
 @dataclass
 class StageWorkerConfig:
-    """Configuration for workers in a stage."""
+    """Configuration for workers in a stage.
+
+    Supports dynamic worker allocation with min/max replicas:
+    - If only num_replicas is set, min_replicas = max_replicas = num_replicas (backward compatible)
+    - If min_replicas and max_replicas are set, tries to create up to max_replicas workers
+    - Job starts as soon as min_replicas workers are available
+    """
 
     resources: dict[str, Any] = field(default_factory=dict)  # Ray resources: cpu, gpu, memory, etc.
-    num_replicas: int = 1  # Number of worker instances to create
+    num_replicas: int | None = None  # Number of worker instances (backward compatible, sets min=max=num_replicas)
+    min_replicas: int | None = None  # Minimum workers required to start (default: 1)
+    max_replicas: int | None = None  # Maximum workers to create (default: num_replicas or min_replicas)
+
+    def __post_init__(self):
+        """Validate and normalize replica configuration."""
+        # Backward compatibility: num_replicas sets both min and max
+        if self.num_replicas is not None:
+            if self.min_replicas is None:
+                self.min_replicas = self.num_replicas
+            if self.max_replicas is None:
+                self.max_replicas = self.num_replicas
+
+        # Set defaults if not specified
+        if self.min_replicas is None:
+            self.min_replicas = 1
+        if self.max_replicas is None:
+            self.max_replicas = self.min_replicas
+
+        # Validation
+        if self.min_replicas < 1:
+            raise ValueError(f"min_replicas must be >= 1, got {self.min_replicas}")
+        if self.max_replicas < self.min_replicas:
+            raise ValueError(
+                f"max_replicas ({self.max_replicas}) must be >= min_replicas ({self.min_replicas})"
+            )
 
 
 @dataclass
@@ -48,10 +79,16 @@ class StageConfig:
 
 @dataclass
 class DataLoaderConfig:
-    """Configuration for data loader."""
+    """Configuration for data loader.
+
+    Data loading is always distributed using Ray workers for mega-scale processing.
+    Each worker loads a shard of the dataset in parallel.
+    """
 
     type: str
     params: dict[str, Any] = field(default_factory=dict)
+    num_workers: int = 8  # Number of parallel loader workers (distributed sharding)
+    checkpoint_interval: int = 1000  # Save checkpoint every N records per worker
 
 
 @dataclass

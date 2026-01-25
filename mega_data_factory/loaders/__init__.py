@@ -7,11 +7,18 @@ Loaders are automatically registered when this package is imported.
 
 from mega_data_factory.framework import DataLoaderRegistry
 
-from .huggingface_loader import HuggingFaceDataLoader
+from .commoncrawl_loader import CommonCrawlWarcStreamLoader
+from .huggingface_loader import HuggingFaceLoader
 
 # Register all loaders with the framework
-DataLoaderRegistry.register("HuggingFaceDataLoader", HuggingFaceDataLoader)
+DataLoaderRegistry.register("HuggingFaceLoader", HuggingFaceLoader)
+DataLoaderRegistry.register("CommonCrawlWarcStreamLoader", CommonCrawlWarcStreamLoader)
+
+# Backward compatibility
+DataLoaderRegistry.register("HuggingFaceDataLoader", HuggingFaceLoader)
+DataLoaderRegistry.register("HuggingFaceFileLoader", HuggingFaceLoader)
 
 __all__ = [
-    "HuggingFaceDataLoader",
+    "HuggingFaceLoader",
+    "CommonCrawlWarcStreamLoader",
 ]
