@@ -99,13 +99,18 @@ mdf run -c configs/z_image.yaml --max-samples 1000 --batch-size 500
 | [`URLFilter`](mega_data_factory/operators/filters/url_filter.md) | Domain blocklist, URL word scoring, quality source exclusion | RefinedWeb §G.1 |
 | [`TextLengthFilter`](mega_data_factory/operators/filters/text_length_filter.md) | Filter by character/word count | FineWeb, RefinedWeb |
 
+**Deduplicators:**
+
+| Operator | Description |
+|----------|-------------|
+| [`TextExactDeduplicator`](mega_data_factory/operators/dedup/text_exact_dedup.md) | Exact content hash deduplication (xxhash/MD5) |
+
 **Coming Soon:**
 - `LanguageFilter` - fastText language detection
 - `PerplexityFilter` - KenLM perplexity scoring
 - `RepetitionFilter` - n-gram repetition detection
 - `QualityClassifierFilter` - Model-based quality (FineWeb-Edu style)
 - `MinHashDeduplicator` - Near-duplicate detection
-- `ExactDeduplicator` - Exact match deduplication
 
 ### Image Operators
 
@@ -311,6 +316,10 @@ stages:
           min_length: 100
           max_length: 100000
           text_field: "text"
+      # Exact deduplication (RefinedWeb §G.3)
+      - name: text_exact_deduplicator
+        params:
+          include_url: true  # URL+content dedup
     worker:
       min_replicas: 2
       max_replicas: 8

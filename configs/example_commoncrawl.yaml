@@ -17,6 +17,9 @@ stages:
           min_length: 100
           max_length: 100000
           text_field: "text"
+      - name: text_exact_deduplicator
+        params:
+          text_field: "text"
     worker:
       min_replicas: 16
       max_replicas: 16
@@ -27,8 +30,9 @@ data_writer:
     output_path: "./output/commoncrawl"
 
 executor:
-  max_samples: 1000000
-  batch_size: 10000
+  max_samples: 10000
+  batch_size: 1000
+  dedup_num_buckets: 4
   metrics:
     enabled: true
     generate_report: true
