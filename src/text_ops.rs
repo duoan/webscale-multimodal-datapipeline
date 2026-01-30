@@ -7,25 +7,39 @@
 use dom_smoothie::Readability;
 use pyo3::prelude::*;
 use rayon::prelude::*;
+use std::panic::{self, AssertUnwindSafe};
 
 // ============================================================================
 // HTML Text Extraction
 // ============================================================================
 
 /// Extract readable text from HTML using dom_smoothie (Rust port of readability.js)
+/// Uses catch_unwind to handle panics from the dom_smoothie library gracefully,
+/// especially for malformed HTML or UTF-8 boundary issues with non-ASCII characters.
 fn html_extract_text_core(html: &str) -> Option<(String, String)> {
-    let mut readability = Readability::new(html, None, None).ok()?;
-    let article = readability.parse().ok()?;
+    // Wrap in catch_unwind to handle panics from dom_smoothie
+    // This is necessary because dom_smoothie can panic on certain malformed HTML
+    // or when it tries to slice strings at invalid UTF-8 boundaries
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut readability = Readability::new(html, None, None).ok()?;
+        let article = readability.parse().ok()?;
 
-    let title = article.title;
-    let content = article.text_content.to_string();
+        let title = article.title;
+        let content = article.text_content.to_string();
 
-    // Skip if content is empty or too short
-    if content.trim().is_empty() || content.len() < 50 {
-        return None;
+        // Skip if content is empty or too short
+        if content.trim().is_empty() || content.len() < 50 {
+            return None;
+        }
+
+        Some((title, content))
+    }));
+
+    // If panic occurred, return None instead of propagating the panic
+    match result {
+        Ok(opt) => opt,
+        Err(_) => None, // Panic occurred, return None gracefully
     }
-
-    Some((title, content))
 }
 
 /// Extract readable text from a single HTML string

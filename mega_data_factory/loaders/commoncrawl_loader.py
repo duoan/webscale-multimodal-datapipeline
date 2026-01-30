@@ -122,7 +122,11 @@ class CommonCrawlLoader(DataLoader):
                         continue
 
                     # 🦀 Rust: Extract text from HTML (fast!)
-                    result = html_extract_text(html_content)
+                    try:
+                        result = html_extract_text(html_content)
+                    except Exception as e:
+                        print(f"Error {e}")
+
                     if result is None:
                         continue
 
